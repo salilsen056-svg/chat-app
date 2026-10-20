@@ -67,6 +67,24 @@ export const store = {
   },
   mediaInfo: (id,userId) => one('SELECT m."mediaMime",m."mediaName",octet_length(b.data) AS size FROM messages m JOIN message_media b ON b."messageId"=m.id WHERE m.id=$1 AND (m."from"=$2 OR m."to"=$2) AND NOT m.deleted AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$2 AND h."messageId"=m.id)', [id,userId]),
   mediaBytes: (id,userId,start,length) => one('SELECT substring(b.data,$3::int,$4::int) AS data FROM messages m JOIN message_media b ON b."messageId"=m.id WHERE m.id=$1 AND (m."from"=$2 OR m."to"=$2) AND NOT m.deleted AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$2 AND h."messageId"=m.id)', [id,userId,start+1,length]),
+  async *exportMessages(userId,peerId) {
+    const client=await (await db()).connect();let committed=false;
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      let time=null,lastId=null;
+      for(;;){
+        const result=await client.query('SELECT m.*,m."createdAt"::text AS "_cursorTime",u.name AS "senderName" FROM messages m JOIN users u ON u.id=m."from" WHERE m.conversation=$1 AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$2 AND h."messageId"=m.id) AND ($3::timestamptz IS NULL OR (m."createdAt",m.id)>($3::timestamptz,$4::text)) ORDER BY m."createdAt",m.id LIMIT 500', [[userId,peerId].sort().join(':'),userId,time,lastId]);
+        for(const row of result.rows)yield row;
+        if(result.rows.length<500)break;
+        const last=result.rows.at(-1);time=last._cursorTime;lastId=last.id;
+      }
+      await client.query('COMMIT');committed=true;
+    }finally{if(!committed)await client.query('ROLLBACK').catch(()=>{});client.release();}
+  },
+  async clear(userId,peerId) {
+    const result=await (await db()).query('INSERT INTO hidden_messages ("userId","messageId") SELECT $1,id FROM messages WHERE conversation=$2 ON CONFLICT ("userId","messageId") DO NOTHING RETURNING "messageId" AS id',[userId,[userId,peerId].sort().join(':')]);
+    return result.rows.map(m=>m.id);
+  },
   hide: (id,userId) => one('INSERT INTO hidden_messages ("userId","messageId") SELECT $2,id FROM messages WHERE id=$1 AND ("from"=$2 OR "to"=$2) ON CONFLICT ("userId","messageId") DO UPDATE SET "hiddenAt"=hidden_messages."hiddenAt" RETURNING "messageId" AS id', [id,userId]),
   async delete(id,userId) {
     const client=await (await db()).connect();

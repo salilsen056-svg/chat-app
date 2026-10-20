@@ -1,4 +1,7 @@
 import { createServer } from 'node:http';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { exportLine } from './lib/chat-export.mjs';
 import { randomBytes, createHash } from 'node:crypto';
 import next from 'next';
 import { MAX_PHOTO_BYTES, preparePhoto } from './lib/profile-photo.mjs';
@@ -62,6 +65,18 @@ const server = createServer(async (req, res) => {
     const user = await authenticate(req.headers.cookie);
     if (!user) return reply(401, { error: 'Please sign in.' });
     const id = user.id;
+    if (url.pathname === '/api/messages/export' && req.method === 'GET') {
+      limit(`export:${id}`,10);
+      const peerId=url.searchParams.get('with');
+      if(!validId(peerId)||peerId===id)return reply(400,{error:'Invalid conversation.'});
+      const peer=await store.user(peerId);if(!peer)return reply(404,{error:'User not found.'});
+      async function* content(){
+        yield `\uFEFFHello Chat - Conversation export\n${user.name.replace(/[\r\n]/g,' ')} & ${peer.name.replace(/[\r\n]/g,' ')}\nExported: ${new Date().toISOString()}\nTimes are UTC. Media files are not embedded.\nMessages removed with Delete for me or Clear chat are excluded.\n\n`;
+        for await(const message of store.exportMessages(id,peerId))yield exportLine(message);
+      }
+      res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Content-Disposition':`attachment; filename="chat-export-${peerId}.txt"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'});
+      await pipeline(Readable.from(content()),res);return;
+    }
     if (url.pathname === '/api/messages/media' && req.method === 'POST') {
       limit(`upload:${id}`,10);
       const to=url.searchParams.get('to');
@@ -139,7 +154,7 @@ const server = createServer(async (req, res) => {
       return reply(200, { messages: (await store.history(id, peer)).map(publicMessage) });
     }
     reply(404, { error: 'Not found.' });
-  } catch (e) { console.error(e.message); reply(503, { error: /DATABASE_URL/.test(e.message) ? e.message : 'Unable to complete the request. Check the database connection or try again shortly.' }); }
+  } catch (e) { console.error(e.message); if(res.headersSent){res.destroy();return;} reply(503, { error: /DATABASE_URL/.test(e.message) ? e.message : 'Unable to complete the request. Check the database connection or try again shortly.' }); }
 });
 const io = new Server(server, { maxHttpBufferSize: 16000, allowRequest: (req, done) => { try { done(null, !req.headers.origin || new URL(req.headers.origin).host === req.headers.host); } catch { done(null, false); } } });
 io.use(async (socket, done) => { try { const user = await authenticate(socket.request.headers.cookie); if (!user) return done(new Error('Please sign in.')); socket.data.user = publicUser(user); done(); } catch { done(new Error('Database unavailable.')); } });
@@ -157,6 +172,17 @@ io.on('connection', socket => {
       io.to(message.from).to(message.to).emit('message:reactions', update);
       ack({ ok: true, ...update });
     } catch { ack({ error: 'Unable to update reaction. Please try again.' }); }
+  });
+  socket.on('chat:clear', async (input, ack) => {
+    if(typeof ack!=='function')return;
+    try {
+      if(!await authenticate(socket.request.headers.cookie))return ack({error:'Session expired. Please sign in again.'});
+      limit(`clear:${user.id}`,10);
+      if(!validId(input?.with)||input.with===user.id||!await store.user(input.with))return ack({error:'Invalid conversation.'});
+      const ids=await store.clear(user.id,input.with);
+      const result={with:input.with,ids};
+      io.to(user.id).emit('chat:cleared',result);ack({ok:true,...result});
+    }catch{ack({error:'Unable to clear this chat. Please try again.'});}
   });
   socket.on('message:hide', async (input, ack) => {
     if (typeof ack !== 'function') return;

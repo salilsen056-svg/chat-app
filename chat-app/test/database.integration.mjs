@@ -26,6 +26,18 @@ test('PostgreSQL: authorization, atomic reactions, history, expiry and safe lega
     assert.equal((await store.history(b.id,a.id)).length,1);
     assert.equal((await store.users(a.id)).find(u=>u.id===b.id).lastMessage,null);
     assert.equal((await store.hide(m.id,a.id)).id,m.id);
+    const beforeClear=await store.send(a.id,b.id,'Before clear');
+    await store.clear(b.id,a.id);
+    assert.equal((await store.history(b.id,a.id)).length,0);
+    assert.equal((await store.history(a.id,b.id)).some(item=>item.id===beforeClear.id),true);
+    const afterClear=await store.send(a.id,b.id,'After clear');
+    assert.equal((await store.history(b.id,a.id))[0].id,afterClear.id);
+    await store.clear(b.id,a.id);assert.deepEqual(await store.clear(b.id,a.id),[]);
+    await d.query('INSERT INTO messages (id,"from","to",conversation,text,"createdAt") SELECT lpad(to_hex(g),24,\'0\'),$1,$2,$3,\'Export row \'||g,to_timestamp(1792490000)+interval \'0.000123 seconds\' FROM generate_series(10000,10505) g',[a.id,b.id,[a.id,b.id].sort().join(':')]);
+    const exported=[];for await(const row of store.exportMessages(a.id,b.id))exported.push(row);
+    const visible=await d.query('SELECT count(*) FROM messages m WHERE conversation=$1 AND NOT EXISTS(SELECT 1 FROM hidden_messages h WHERE h."messageId"=m.id AND h."userId"=$2)',[[a.id,b.id].sort().join(':'),a.id]);
+    assert.equal(exported.length,Number(visible.rows[0].count));assert.equal(new Set(exported.map(m=>m.id)).size,exported.length);
+    console.log('Verified export pagination beyond 500 rows with identical microsecond timestamps.');
     await store.createSession(`expired-${suffix}`,a.id,new Date(Date.now()-1000));assert.equal(await store.authenticate(`expired-${suffix}`),undefined);
     await store.createSession(`active-${suffix}`,a.id,new Date(Date.now()+60000));assert.equal((await store.authenticate(`active-${suffix}`)).id,a.id);
     await store.setPhoto(a.id,Buffer.from([1,2,3]),'version');assert.deepEqual((await store.photo(a.id)).photo,Buffer.from([1,2,3]));
