@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: salil-hello-chat
+    runtime: node
+    repo: https://github.com/salilsen056-svg/chat-app
+    branch: main
+    rootDir: chat-app
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: MONGODB_DB
+        value: hello_chat
+      - key: MONGODB_URI
+        sync: false

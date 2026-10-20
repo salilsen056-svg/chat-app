@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import next from 'next';
+import { MAX_PHOTO_BYTES, preparePhoto } from './lib/profile-photo.mjs';
 import env from '@next/env';
 import { MongoClient, ObjectId } from 'mongodb';
 import { Server } from 'socket.io';
@@ -22,7 +23,7 @@ async function db() {
   return database;
 }
 const digest = token => createHash('sha256').update(token).digest('hex');
-const publicUser = u => ({ id: u._id.toString(), name: u.name, email: u.email });
+const publicUser = u => ({ id: u._id.toString(), name: u.name, email: u.email, avatarUrl: u.photoVersion ? `/api/avatars/${u._id.toString()}?v=${u.photoVersion}` : null });
 async function authenticate(header) {
   const token = cookieToken(header);
   if (!token) return null;
@@ -45,6 +46,10 @@ const server = createServer(async (req, res) => {
   if (!url.pathname.startsWith('/api/')) return app.getRequestHandler()(req, res);
   const reply = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
   try {
+    if (url.pathname === '/api/health' && req.method === 'GET') {
+      await (await db()).command({ ping: 1 });
+      return reply(200, { status: 'ok' });
+    }
     if (req.method !== 'GET' && req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return reply(403, { error: 'Invalid origin.' });
     if (['/api/login','/api/signup'].includes(url.pathname) && req.method === 'POST') {
       limit(`auth:${req.socket.remoteAddress}`, 20);
@@ -70,6 +75,32 @@ const server = createServer(async (req, res) => {
     const user = await authenticate(req.headers.cookie);
     if (!user) return reply(401, { error: 'Please sign in.' });
     const id = user._id.toString();
+    if (url.pathname.startsWith('/api/avatars/') && req.method === 'GET') {
+      const photoId = url.pathname.slice('/api/avatars/'.length);
+      if (!ObjectId.isValid(photoId)) return reply(404, { error: 'Photo not found.' });
+      const owner = await (await db()).collection('users').findOne({ _id: new ObjectId(photoId) }, { projection: { photo: 1 } });
+      if (!owner?.photo) return reply(404, { error: 'Photo not found.' });
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+      return res.end(Buffer.from(owner.photo.buffer));
+    }
+    if (url.pathname === '/api/profile/photo' && ['POST', 'DELETE'].includes(req.method)) {
+      limit(`photo:${id}`, 10);
+      const d = await db();
+      if (req.method === 'DELETE') {
+        await d.collection('users').updateOne({ _id: user._id }, { $unset: { photo: '', photoVersion: '' } });
+      } else {
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(req.headers['content-type'])) return reply(400, { error: 'Choose a JPG, PNG or WebP photo.' });
+        if (Number(req.headers['content-length']) > MAX_PHOTO_BYTES) return reply(413, { error: 'Photo must be smaller than 2 MB.' });
+        const chunks = []; let bytes = 0;
+        for await (const chunk of req) { bytes += chunk.length; if (bytes > MAX_PHOTO_BYTES) return reply(413, { error: 'Photo must be smaller than 2 MB.' }); chunks.push(chunk); }
+        let photo;
+        try { photo = await preparePhoto(Buffer.concat(chunks)); } catch { return reply(400, { error: 'Invalid photo. Choose a still JPG, PNG or WebP smaller than 2 MB (up to 16 megapixels).' }); }
+        await d.collection('users').updateOne({ _id: user._id }, { $set: { photo, photoVersion: randomBytes(12).toString('hex') } });
+      }
+      const updated = publicUser(await d.collection('users').findOne({ _id: user._id }, { projection: { photo: 0, password: 0 } }));
+      io.emit('profile:updated', { id: updated.id, avatarUrl: updated.avatarUrl });
+      return reply(200, { user: updated });
+    }
     if (url.pathname === '/api/me' && req.method === 'GET') return reply(200, { user: publicUser(user) });
     if (url.pathname === '/api/logout' && req.method === 'POST') {
       await (await db()).collection('sessions').deleteOne({ _id: digest(cookieToken(req.headers.cookie)) });
@@ -77,8 +108,15 @@ const server = createServer(async (req, res) => {
       res.setHeader('Set-Cookie', 'session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'); return reply(200, { ok: true });
     }
     if (url.pathname === '/api/users' && req.method === 'GET') {
-      const users = await (await db()).collection('users').find({ _id: { $ne: user._id } }).sort({ name: 1 }).limit(200).toArray();
-      return reply(200, { users: users.map(publicUser) });
+      const users = await (await db()).collection('users').find({ _id: { $ne: user._id } }, { projection: { photo: 0, password: 0 } }).sort({ name: 1 }).limit(200).toArray();
+      const latest = await (await db()).collection('messages').aggregate([
+        { $match: { $or: [{ from: id }, { to: id }] } },
+        { $sort: { createdAt: -1 } },
+        { $group: { _id: '$conversation', message: { $first: '$$ROOT' } } },
+        { $project: { 'message._id': 1, 'message.text': 1, 'message.from': 1, 'message.to': 1, 'message.deleted': 1, 'message.createdAt': 1 } }
+      ]).toArray();
+      const previews = new Map(latest.map(({ message }) => [message.from === id ? message.to : message.from, message]));
+      return reply(200, { users: users.map(u => ({ ...publicUser(u), lastMessage: previews.get(u._id.toString()) || null })) });
     }
     if (url.pathname === '/api/messages' && req.method === 'GET') {
       const peer = url.searchParams.get('with'); if (!ObjectId.isValid(peer || '')) return reply(400, { error: 'Invalid user.' });
@@ -142,4 +180,4 @@ io.on('connection', socket => {
     } catch(e) { ack({ error: e.message }); }
   });
 });
-server.listen(port, () => console.log(`Hello Chat: http://localhost:${port}`));
+server.listen(port, '0.0.0.0', () => console.log(`Hello Chat: http://localhost:${port}`));

@@ -1,10 +1,10 @@
 # Hello Chat
 
-A responsive one-to-one chat app built with Next.js App Router, React, MongoDB, and Socket.IO.
+A responsive one-to-one chat app built with Next.js App Router, React, MongoDB, and Socket.IO, with a WhatsApp-inspired desktop/mobile interface.
 
 ## Start locally
 
-Requires Node.js 20.9+ and a running MongoDB instance (local MongoDB or MongoDB Atlas).
+Requires Node.js 22 and a running MongoDB instance (local MongoDB or MongoDB Atlas).
 
 ```sh
 npm install
@@ -30,6 +30,10 @@ npm start
 
 Deploy the custom Node server on a host supporting persistent WebSocket connections. Use HTTPS in production for secure session cookies. This custom server is not designed for Vercel serverless hosting. Run one server instance; multiple replicas need a shared Socket.IO adapter and distributed rate limiting.
 
+## Interface
+
+Desktop navigation rail, chat list with saved message previews, recent-chat filter, mobile back navigation, date dividers, emoji composer, light/dark theme, and search within the latest 100 loaded messages. The single check indicates the message was saved to the server; delivery/read receipts are not implemented. Voice/video calls, status updates, and group chats are not included.
+
 ## Included
 
 - Signup and login with salted scrypt password hashes.
@@ -39,7 +43,9 @@ Deploy the custom Node server on a host supporting persistent WebSocket connecti
 - Sender-only Delete for everyone: removes stored message text and syncs a deleted-message placeholder to both participants.
 - Input validation, origin checks, basic in-process auth/message rate limits.
 - Responsive people search, connection status, logout, and error states.
-- Love ❤️, Like 👍, Angry 😡, and Happy 😄 reactions on messages. Each participant can select one reaction, switch it, or tap it again to remove it. Counts update live and persist in MongoDB; deleted messages cannot receive reactions.
+- Circular profile photos: choose, preview, upload, change or remove a JPG/PNG/WebP up to 2 MB. Server validates and reencodes images; MongoDB stores the photo and authenticated users see updates live.
+- A custom local SVG chat wallpaper with soft botanical and conversation motifs.
+- Love ❤️, Like 👍, Angry 😡, and Happy 😄 reactions on messages. Each participant can select one reaction, switch it, or tap it again to remove it. Only selected reactions appear below the message on both sides. Use React + to open the emoji picker. Counts update live and persist in MongoDB; deleted messages cannot receive reactions.
 - Bold and italic formatting buttons with a live preview; select text and use the toolbar or Ctrl/⌘+B and Ctrl/⌘+I. Supports **bold**, *italic*, and ***both*** in messages.
 
 The app requires MongoDB for authentication and messaging. It does not seed fake users or simulate delivery. For a public launch, add email verification, password reset, reporting/blocking, and operational monitoring. Messages are stored in MongoDB, without end-to-end encryption.
