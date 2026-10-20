@@ -34,6 +34,7 @@ Use the sample password only for local development. Keep `.env.local` private.
 - Media is stored in PostgreSQL message_media bytea and can only be fetched by the two participants. Deletion removes the blob too. A 250 MB application-wide attachment cap protects the free database; deleting sent media releases attachment capacity.
 - Circular profile photos: validated JPEG/PNG/WebP uploads up to 2 MB, cropped/reencoded to 256px JPEG and stored in bytea.
 - Bold/italic formatting, live preview, composer emoji picker and selected-only message reactions.
+- Header actions: select any message for persistent Delete for me; select your own message for Delete for everyone. Bold/Italic controls live in the chat header; the composer is a compact rectangle.
 - Sender-only Delete for everyone; Love, Like, Angry and Happy reactions with live counts.
 - Chat previews, recent-chat filter, search within the latest 100 messages, mobile navigation and light/dark theme.
 - Database-aware health check at `/api/health`.

@@ -21,13 +21,15 @@ export default function Home() {
   const [attachment, setAttachment] = useState(null);
   const composerInput = useRef(null), reactionUpdates = useRef(new Map());
   const [reacting, setReacting] = useState(null);
-  const socket = useRef(null), end = useRef(null), active = useRef(null), deletedIds = useRef(new Set());
+  const socket = useRef(null), end = useRef(null), active = useRef(null), deletedIds = useRef(new Set()), hiddenIds = useRef(new Set());
   const [dark, setDark] = useState(false), [chatFilter, setChatFilter] = useState('all'), [messageSearch, setMessageSearch] = useState(''), [showMessageSearch, setShowMessageSearch] = useState(false), [emojiOpen, setEmojiOpen] = useState(false);
   useEffect(() => { setDark(localStorage.getItem('hello-dark') === 'true'); }, []);
+  const [selectedMessageId, setSelectedMessageId] = useState(null);
   const [deleting, setDeleting] = useState(null), [photoOpen, setPhotoOpen] = useState(false);
   useEffect(() => { api('me').then(r => setUser(r.user)).catch(e => { if (e.message !== 'Please sign in.') setError(e.message); }).finally(() => setLoading(false)); }, []);
   useEffect(() => {
     if (!user) return;
+    hiddenIds.current = new Set();
     const refresh = () => api('users').then(r => setUsers(r.users)).catch(e => setError(e.message)); refresh();
     const timer = setInterval(refresh, 15000);
     const s = io(); socket.current = s;
@@ -38,15 +40,16 @@ export default function Home() {
       setPeer(current => current?.id === profile.id ? { ...current, avatarUrl: profile.avatarUrl } : current);
       setUser(current => current?.id === profile.id ? { ...current, avatarUrl: profile.avatarUrl } : current);
     });
+    s.on('message:hidden', m => { applyHidden(m.id); refresh(); });
     s.on('message:reactions', updateReactions);
     s.on('message:deleted', m => { setUsers(items => items.map(item => item.lastMessage?.id === m.id || item.lastMessage?._id === m.id ? { ...item, lastMessage: { ...item.lastMessage, text: undefined, deleted: true } } : item)); deletedIds.current.add(m.id); setMessages(prev => prev.map(item => item.id === m.id ? { ...item, text: undefined, deleted: true, reactions: {} } : item)); });
     s.on('message:new', receiveMessage);
     return () => { clearInterval(timer); s.disconnect(); socket.current = null; };
   }, [user?.id]);
   useEffect(() => {
-    active.current = peer?.id; setMessages([]); setDraft(''); setMessageSearch(''); setShowMessageSearch(false); setEmojiOpen(false); setAttachment(null); if (!peer) return;
+    active.current = peer?.id; setMessages([]); setDraft(''); setMessageSearch(''); setShowMessageSearch(false); setEmojiOpen(false); setAttachment(null); setSelectedMessageId(null); if (!peer) return;
     let ignore = false; setHistoryLoading(true); setError('');
-    api(`messages?with=${peer.id}`).then(r => { if (!ignore) setMessages(prev => { const unique = new Map([...r.messages, ...prev].map(m => { const update = reactionUpdates.current.get(m.id); const current = update && update.reactionVersion > (m.reactionVersion || 0) ? { ...m, ...update } : m; return [m.id, deletedIds.current.has(m.id) ? { ...current, text: undefined, deleted: true, reactions: {} } : current]; })); return [...unique.values()].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt)); }); }).catch(e => { if (!ignore) setError(e.message); }).finally(() => { if (!ignore) setHistoryLoading(false); });
+    api(`messages?with=${peer.id}`).then(r => { if (!ignore) setMessages(prev => { const unique = new Map([...r.messages, ...prev].map(m => { const update = reactionUpdates.current.get(m.id); const current = update && update.reactionVersion > (m.reactionVersion || 0) ? { ...m, ...update } : m; return [m.id, deletedIds.current.has(m.id) ? { ...current, text: undefined, deleted: true, reactions: {} } : current]; })); return [...unique.values()].filter(m => !hiddenIds.current.has(m.id)).sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt)); }); }).catch(e => { if (!ignore) setError(e.message); }).finally(() => { if (!ignore) setHistoryLoading(false); });
     return () => { ignore = true; };
   }, [peer?.id]);
   useEffect(() => { end.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -70,13 +73,24 @@ export default function Home() {
       else updateReactions(result);
     });
   }
+  function applyHidden(id) {
+    hiddenIds.current.add(id);setMessages(items=>items.filter(m=>m.id!==id));setSelectedMessageId(null);
+  }
+  function deleteForMe(id) {
+    if(!connected || deleting)return;setDeleting(id);setError('');
+    socket.current.timeout(10000).emit('message:hide',{id},(err,result)=>{
+      setDeleting(null);
+      if(err || result?.error)setError(result?.error || 'Deletion could not be confirmed. Please try again.');
+      else {applyHidden(id);api('users').then(r=>setUsers(r.users)).catch(e=>setError(e.message));}
+    });
+  }
   function deleteMessage(id) {
     if (!connected || deleting) return;
     setDeleting(id); setError('');
     socket.current.timeout(10000).emit('message:delete', { id }, (err, result) => {
       setDeleting(null);
       if (err || result?.error) setError(result?.error || 'Deletion could not be confirmed. Please try again.');
-      else { deletedIds.current.add(id); setMessages(prev => prev.map(m => m.id === id ? { ...m, text: undefined, deleted: true, reactions: {} } : m)); }
+      else { setSelectedMessageId(null); deletedIds.current.add(id); setMessages(prev => prev.map(m => m.id === id ? { ...m, text: undefined, deleted: true, reactions: {} } : m)); }
     });
   }
   async function logout() { try { await api('logout', {}); setUser(null); setPeer(null); setMessages([]); setConnected(false); setError(''); } catch(e) { setError(e.message); } }
@@ -89,6 +103,7 @@ export default function Home() {
     requestAnimationFrame(() => { input.focus(); input.setSelectionRange(next.start, next.end); });
   }
   function receiveMessage(message) {
+    if(hiddenIds.current.has(message.id))return;
     const m=deletedIds.current.has(message.id) ? { ...message,text:undefined,deleted:true,reactions:{} } : message;
     setUsers(items=>items.map(item=>item.id===(m.from===user.id?m.to:m.from)?{...item,lastMessage:m}:item));
     if(m.from===active.current||m.to===active.current)setMessages(prev=>prev.some(item=>item.id===m.id)?prev:[...prev,m]);
@@ -115,6 +130,7 @@ export default function Home() {
   }
   const previewText = message => !message ? 'Say hello 👋' : message.deleted ? 'This message was deleted' : `${message.mediaType === 'image' ? '📷 ' : message.mediaType === 'video' ? '🎬 ' : ''}${message.text?.replace(/\*/g, '').replace(/^[📷🎬]\s*/u,'') || ''}`;
   const visibleUsers = users.filter(u => `${u.name} ${u.email}`.toLowerCase().includes(search.toLowerCase()) && (chatFilter === 'all' || u.lastMessage)).sort((a, b) => new Date(b.lastMessage?.createdAt || 0) - new Date(a.lastMessage?.createdAt || 0));
+  const selectedMessage = messages.find(m => m.id === selectedMessageId);
   const visibleMessages = messages.filter(m => !messageSearch || (!m.deleted && m.text?.toLowerCase().includes(messageSearch.toLowerCase())));
   if (loading) return <div className="loading"><span className="brand">hello<span>✳</span></span><p>Opening your space…</p></div>;
   if (!user) return <main className="auth-shell"><section className="intro"><a className="brand" href="/">hello<span>✳</span></a><div><span className="eyebrow">GOOD CONVERSATIONS START HERE</span><h1>A little hello.<br/>A lot closer.</h1><p>Your people, just a message away.<br/>A simple space for everyday conversations.</p><div className="art"><div className="art-message">Hey, how’s your day going? <span>10:24</span></div><div className="art-message reply">Better now that you’re here ✨ <span>10:25</span></div><div className="art-spark">✳</div></div></div><span className="intro-foot">Small moments. Real connections.</span></section><section className="auth"><div className="auth-card"><span className="eyebrow">YOUR NEXT CONVERSATION AWAITS</span><h2>{signup ? 'Make yourself at home.' : 'Welcome back.'}</h2><p>{signup ? 'Create an account and say your first hello.' : 'Sign in to pick up where you left off.'}</p><form onSubmit={auth}>{signup && <label>Your name<input name="name" autoComplete="name" required maxLength={60} placeholder="Alex Morgan"/></label>}<label>Email address<input type="email" name="email" autoComplete="email" required placeholder="you@example.com"/></label><label>Password<input type="password" name="password" autoComplete={signup ? 'new-password' : 'current-password'} minLength={8} maxLength={128} required placeholder="At least 8 characters"/></label>{error && <p className="error" role="alert">{error}</p>}<button className="primary" disabled={busy}>{busy ? 'One moment…' : signup ? 'Create account →' : 'Sign in →'}</button></form><p className="switch">{signup ? 'Already have an account?' : 'New around here?'} <button onClick={() => { setSignup(!signup); setError(''); }}>{signup ? 'Sign in' : 'Create an account'}</button></p><div className="privacy">◈ &nbsp; Your conversations. Your space.</div></div></section></main>;
@@ -134,10 +150,10 @@ export default function Home() {
       <div className="profile"><button type="button" className="profile-photo-button" aria-label="Edit your profile photo" title="Add or change profile photo" onClick={() => setPhotoOpen(true)}><Avatar person={user}/><span className="photo-badge">+</span></button><div><strong>{user.name}</strong><span><i className={connected ? 'online' : ''}/> {connected ? 'Connected' : 'Reconnecting…'}</span></div><button onClick={logout} aria-label="Sign out" title="Sign out"><Icon name="logout" size={20}/></button></div>
     </aside>
     <section className="conversation">{peer ? <>
-      <header className="chat-header"><button className="back" aria-label="Back to people" onClick={() => setPeer(null)}><Icon name="back"/></button><Avatar person={peer}/><div className="chat-peer"><h2>{peer.name}</h2><p>Click, type, stay in touch</p></div><div className="format-toolbar header-format" role="toolbar" aria-label="Text formatting"><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('**')} aria-label="Bold" title="Bold (Ctrl/⌘ + B)"><strong>B</strong></button><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('*')} aria-label="Italic" title="Italic (Ctrl/⌘ + I)"><em>I</em></button></div><button className="icon-button" aria-label="Search this conversation" title="Search messages" onClick={() => setShowMessageSearch(v => !v)}><Icon name="search"/></button></header>
+      <header className="chat-header"><button className="back" aria-label="Back to people" onClick={() => selectedMessage ? setSelectedMessageId(null) : setPeer(null)}><Icon name="back"/></button><Avatar person={peer}/><div className="chat-peer"><h2>{selectedMessage ? '1 message selected' : peer.name}</h2><p>{selectedMessage ? (selectedMessage.from === user.id ? 'Sent by you' : 'Received message') : 'Click, type, stay in touch'}</p></div>{selectedMessage && <div className="header-message-actions"><button type="button" className="header-delete-for-me" disabled={!connected || deleting !== null} onClick={() => deleteForMe(selectedMessage.id)}>{deleting === selectedMessage.id ? 'Deleting…' : 'Delete for me'}</button>{selectedMessage.from === user.id && !selectedMessage.deleted && <button type="button" className="header-delete" disabled={!connected || deleting !== null} onClick={() => deleteMessage(selectedMessage.id)}>{deleting === selectedMessage.id ? 'Deleting…' : 'Delete for everyone'}</button>}<button type="button" className="icon-button" aria-label="Cancel message selection" onClick={() => setSelectedMessageId(null)}><Icon name="close" size={18}/></button></div>}<div className="format-toolbar header-format" role="toolbar" aria-label="Text formatting"><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('**')} aria-label="Bold" title="Bold (Ctrl/⌘ + B)"><strong>B</strong></button><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('*')} aria-label="Italic" title="Italic (Ctrl/⌘ + I)"><em>I</em></button></div>{!selectedMessage && <button className="icon-button" aria-label="Search this conversation" title="Search messages" onClick={() => setShowMessageSearch(v => !v)}><Icon name="search"/></button>}</header>
       {showMessageSearch && <div className="message-search"><Icon name="search" size={18}/><input aria-label="Search loaded messages" placeholder="Search the latest 100 messages" value={messageSearch} onChange={e => setMessageSearch(e.target.value)}/><button className="icon-button" aria-label="Close message search" onClick={() => { setShowMessageSearch(false); setMessageSearch(''); }}><Icon name="close" size={18}/></button></div>}
       <div className="messages"><div className="conversation-notice">Your conversation with {peer.name}. Make it a good one.</div>{historyLoading && <p className="history-loading">Loading conversation…</p>}{!historyLoading && !messages.length && <div className="conversation-start"><Avatar person={peer} className="large"/><h3>Say hello to {peer.name.split(' ')[0]} 👋</h3><p>A new conversation starts with you.</p></div>}
-      {visibleMessages.map((m,index) => <div key={m.id}>{(index === 0 || new Date(visibleMessages[index-1].createdAt).toDateString() !== new Date(m.createdAt).toDateString()) && <div className="date-divider"><span>{new Date(m.createdAt).toLocaleDateString([], { day:'numeric', month:'long', year:'numeric' })}</span></div>}<div className={`message-row ${m.from === user.id ? 'mine' : ''}`}><div className="bubble">{!m.deleted && m.mediaType && <MessageMedia message={m}/>}<p className={m.deleted ? 'deleted-text' : undefined}>{m.deleted ? 'This message was deleted' : formatMessage(m.text)}</p><div className="message-meta"><time>{new Date(m.createdAt).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}</time>{m.from === user.id && <span className="sent-check" title="Saved to server"><Icon name="check" size={15}/></span>}</div>{m.from === user.id && !m.deleted && <button type="button" className="delete-message" disabled={!connected || deleting !== null} onClick={() => deleteMessage(m.id)}>{deleting === m.id ? 'Deleting…' : 'Delete for everyone'}</button>}{!m.deleted && <ReactionBar message={m} userId={user.id} disabled={!connected || reacting !== null} onReact={reactToMessage}/>}</div></div></div>)}{messageSearch && !visibleMessages.length && <p className="no-results">No matching messages.</p>}<div ref={end}/></div>
+      {visibleMessages.map((m,index) => <div key={m.id}>{(index === 0 || new Date(visibleMessages[index-1].createdAt).toDateString() !== new Date(m.createdAt).toDateString()) && <div className="date-divider"><span>{new Date(m.createdAt).toLocaleDateString([], { day:'numeric', month:'long', year:'numeric' })}</span></div>}<div className={`message-row ${m.from === user.id ? 'mine' : ''} ${selectedMessage?.id === m.id ? 'message-selected' : ''}`}><div className="bubble">{!m.deleted && m.mediaType && <MessageMedia message={m}/>}<p className={m.deleted ? 'deleted-text' : undefined}>{m.deleted ? 'This message was deleted' : formatMessage(m.text)}</p><div className="message-meta">{<button type="button" className="message-select" aria-label="Select message for deletion" aria-pressed={selectedMessage?.id === m.id} title="Select message for deletion from the top bar" onClick={() => setSelectedMessageId(current => current === m.id ? null : m.id)}>{selectedMessage?.id === m.id ? '✓' : '⋯'}</button>}<time>{new Date(m.createdAt).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}</time>{m.from === user.id && <span className="sent-check" title="Saved to server"><Icon name="check" size={15}/></span>}</div>{!m.deleted && <ReactionBar message={m} userId={user.id} disabled={!connected || reacting !== null} onReact={reactToMessage}/>}</div></div></div>)}{messageSearch && !visibleMessages.length && <p className="no-results">No matching messages.</p>}<div ref={end}/></div>
       {error && <p className="error chat-error" role="alert">{error}</p>}
       <div className="composer-area">{emojiOpen && <div className="composer-emojis" role="group" aria-label="Insert emoji">{['😀','😄','😂','🥰','❤️','👍','🙏','🎉','👋','😡','😊','✨'].map(emoji => <button type="button" key={emoji} aria-label={`Insert ${emoji}`} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}<button type="button" aria-label="Close emoji picker" onClick={() => setEmojiOpen(false)}>×</button></div>}
       <form className="composer" onSubmit={send}><input ref={mediaInput} hidden type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" aria-label="Choose photo or video" onChange={chooseAttachment}/><button type="button" className="attach-button" aria-label="Attach photo or video" title="Send a photo or video" disabled={!connected} onClick={() => mediaInput.current.click()}><Icon name="attach" size={22}/></button><button type="button" className="emoji-toggle" aria-label="Insert emoji" aria-expanded={emojiOpen} onClick={() => setEmojiOpen(v => !v)}><Icon name="smile" size={25}/></button><div className="composer-content"><textarea ref={composerInput} aria-label="Message" placeholder="Type a message" value={draft} onChange={e => setDraft(e.target.value)} maxLength={2000} rows={1} onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && ['b','i'].includes(e.key.toLowerCase())) { e.preventDefault(); formatDraft(e.key.toLowerCase() === 'b' ? '**' : '*'); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }}/>{draft.includes('*') && <div className="format-preview"><span>Preview</span><p>{formatMessage(draft)}</p></div>}</div><button className="send-button" type="submit" disabled={!connected || !draft.trim() || busy} aria-label="Send message"><Icon name="send"/></button></form><footer className="composer-hint">Enter to send · Shift + Enter for a new line</footer></div>

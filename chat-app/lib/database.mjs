@@ -15,7 +15,7 @@ export async function db() {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(73912231)');
-      for (const file of ['001-initial.sql', '002-media.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
+      for (const file of ['001-initial.sql', '002-media.sql', '003-hidden-messages.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
@@ -41,12 +41,12 @@ export const store = {
   setPhoto: (id,photo,version) => one('UPDATE users SET photo=$2,"photoVersion"=$3 WHERE id=$1 RETURNING id,name,email,"photoVersion"', [id,photo,version]),
   async users(id) {
     const result = await (await db()).query(`SELECT u.id,u.name,u.email,u."photoVersion", row_to_json(latest) AS "lastMessage" FROM users u LEFT JOIN LATERAL
-      (SELECT id,"from","to",text,deleted,"createdAt","mediaType","mediaName","mediaMime","mediaSize" FROM messages WHERE conversation=least(u.id,$1)||':'||greatest(u.id,$1) ORDER BY "createdAt" DESC,id DESC LIMIT 1) latest ON true
+      (SELECT id,"from","to",text,deleted,"createdAt","mediaType","mediaName","mediaMime","mediaSize" FROM messages WHERE NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$1 AND h."messageId"=messages.id) AND conversation=least(u.id,$1)||':'||greatest(u.id,$1) ORDER BY "createdAt" DESC,id DESC LIMIT 1) latest ON true
       WHERE u.id<>$1 ORDER BY u.name LIMIT 200`, [id]);
     return result.rows;
   },
   async history(id,peer) {
-    const result=await (await db()).query('SELECT * FROM (SELECT * FROM messages WHERE conversation=$1 ORDER BY "createdAt" DESC,id DESC LIMIT 100) recent ORDER BY "createdAt",id', [[id,peer].sort().join(':')]);
+    const result=await (await db()).query('SELECT * FROM (SELECT * FROM messages WHERE conversation=$1 AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$2 AND h."messageId"=messages.id) ORDER BY "createdAt" DESC,id DESC LIMIT 100) recent ORDER BY "createdAt",id', [[id,peer].sort().join(':'),id]);
     return result.rows;
   },
   send: (from,to,text) => one('INSERT INTO messages (id,"from","to",text,conversation) VALUES ($1,$2,$3,$4,$5) RETURNING *', [newId(),from,to,text,[from,to].sort().join(':')]),
@@ -65,8 +65,9 @@ export const store = {
     } catch(e) { await client.query('ROLLBACK');throw e; }
     finally {client.release();}
   },
-  mediaInfo: (id,userId) => one('SELECT m."mediaMime",m."mediaName",octet_length(b.data) AS size FROM messages m JOIN message_media b ON b."messageId"=m.id WHERE m.id=$1 AND (m."from"=$2 OR m."to"=$2) AND NOT m.deleted', [id,userId]),
-  mediaBytes: (id,userId,start,length) => one('SELECT substring(b.data,$3::int,$4::int) AS data FROM messages m JOIN message_media b ON b."messageId"=m.id WHERE m.id=$1 AND (m."from"=$2 OR m."to"=$2) AND NOT m.deleted', [id,userId,start+1,length]),
+  mediaInfo: (id,userId) => one('SELECT m."mediaMime",m."mediaName",octet_length(b.data) AS size FROM messages m JOIN message_media b ON b."messageId"=m.id WHERE m.id=$1 AND (m."from"=$2 OR m."to"=$2) AND NOT m.deleted AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$2 AND h."messageId"=m.id)', [id,userId]),
+  mediaBytes: (id,userId,start,length) => one('SELECT substring(b.data,$3::int,$4::int) AS data FROM messages m JOIN message_media b ON b."messageId"=m.id WHERE m.id=$1 AND (m."from"=$2 OR m."to"=$2) AND NOT m.deleted AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$2 AND h."messageId"=m.id)', [id,userId,start+1,length]),
+  hide: (id,userId) => one('INSERT INTO hidden_messages ("userId","messageId") SELECT $2,id FROM messages WHERE id=$1 AND ("from"=$2 OR "to"=$2) ON CONFLICT ("userId","messageId") DO UPDATE SET "hiddenAt"=hidden_messages."hiddenAt" RETURNING "messageId" AS id', [id,userId]),
   async delete(id,userId) {
     const client=await (await db()).connect();
     try {

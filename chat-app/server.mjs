@@ -158,6 +158,18 @@ io.on('connection', socket => {
       ack({ ok: true, ...update });
     } catch { ack({ error: 'Unable to update reaction. Please try again.' }); }
   });
+  socket.on('message:hide', async (input, ack) => {
+    if (typeof ack !== 'function') return;
+    try {
+      if (!await authenticate(socket.request.headers.cookie)) return ack({error:'Session expired. Please sign in again.'});
+      limit(`hide:${user.id}`,60);
+      if (!validId(input?.id || '')) return ack({error:'Invalid message.'});
+      const hidden=await store.hide(input.id,user.id);
+      if(!hidden)return ack({error:'This message is unavailable.'});
+      io.to(user.id).emit('message:hidden',{id:input.id});
+      ack({ok:true,id:input.id});
+    }catch {ack({error:'Unable to remove this message. Please try again.'});}
+  });
   socket.on('message:delete', async (input, ack) => {
     if (typeof ack !== 'function') return;
     try {

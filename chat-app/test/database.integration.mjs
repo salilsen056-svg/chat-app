@@ -20,6 +20,12 @@ test('PostgreSQL: authorization, atomic reactions, history, expiry and safe lega
     await store.react(m.id,b.id,null);current=(await store.history(a.id,b.id))[0];assert.equal(current.reactions[b.id],undefined);
     assert.equal(await store.delete(m.id,b.id),undefined);
     current=await store.delete(m.id,a.id);assert.equal(current.text,null);assert.deepEqual(current.reactions,{});assert.equal('text' in publicMessage(current),false);assert.equal(await store.react(m.id,b.id,'❤️'),undefined);
+    assert.equal(await store.hide(m.id,outsider.id),undefined);
+    assert.equal((await store.hide(m.id,a.id)).id,m.id);
+    assert.equal((await store.history(a.id,b.id)).length,0);
+    assert.equal((await store.history(b.id,a.id)).length,1);
+    assert.equal((await store.users(a.id)).find(u=>u.id===b.id).lastMessage,null);
+    assert.equal((await store.hide(m.id,a.id)).id,m.id);
     await store.createSession(`expired-${suffix}`,a.id,new Date(Date.now()-1000));assert.equal(await store.authenticate(`expired-${suffix}`),undefined);
     await store.createSession(`active-${suffix}`,a.id,new Date(Date.now()+60000));assert.equal((await store.authenticate(`active-${suffix}`)).id,a.id);
     await store.setPhoto(a.id,Buffer.from([1,2,3]),'version');assert.deepEqual((await store.photo(a.id)).photo,Buffer.from([1,2,3]));
