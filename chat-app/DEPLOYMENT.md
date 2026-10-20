@@ -10,7 +10,7 @@ The repository root contains `render.yaml`; the application lives in `chat-app/`
 
 The web service binds to 0.0.0.0 using Render's PORT. It uses Node 22, build `npm ci --include=dev && npm run build`, and start `npm start`. Socket.IO runs in the same process; retain one instance. Production cookies require HTTPS.
 
-Database external access is blocked by `ipAllowList: []`. The app uses Render's private connection. Photos are stored in PostgreSQL bytea; no persistent web-service disk is needed. For external PostgreSQL connections, use your provider's verified TLS connection settings (`sslmode=verify-full` with an appropriate CA when required); certificate verification is never disabled by the app.
+Database external access is blocked by `ipAllowList: []`. The app uses Render's private connection. Profile photos and message attachments are stored in PostgreSQL bytea; no persistent web-service disk is needed. Attachments have a 250 MB app-wide cap; monitor database storage as messages and photos grow. For external PostgreSQL connections, use your provider's verified TLS connection settings (`sslmode=verify-full` with an appropriate CA when required); certificate verification is never disabled by the app.
 
 Free Render PostgreSQL expires after 30 days and has 1 GB storage. Back up or upgrade before expiry; expired free databases are eventually deleted. The free web service can sleep after inactivity. Paid upgrades require your choice.
 

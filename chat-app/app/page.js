@@ -4,6 +4,8 @@ import { io } from 'socket.io-client';
 import ReactionBar from './reaction-bar';
 import Avatar from './avatar';
 import Icon from './icons';
+import MediaUpload from './media-upload';
+import MessageMedia from './message-media';
 import ProfilePhoto from './profile-photo';
 import { applyFormat, formatMessage } from '../lib/formatting.mjs';
 async function api(path, data) {
@@ -15,6 +17,8 @@ export default function Home() {
   const [users, setUsers] = useState([]), [peer, setPeer] = useState(null), [messages, setMessages] = useState([]);
   const [search, setSearch] = useState(''), [draft, setDraft] = useState(''), [error, setError] = useState('');
   const [busy, setBusy] = useState(false), [connected, setConnected] = useState(false), [historyLoading, setHistoryLoading] = useState(false);
+  const mediaInput = useRef(null);
+  const [attachment, setAttachment] = useState(null);
   const composerInput = useRef(null), reactionUpdates = useRef(new Map());
   const [reacting, setReacting] = useState(null);
   const socket = useRef(null), end = useRef(null), active = useRef(null), deletedIds = useRef(new Set());
@@ -36,11 +40,11 @@ export default function Home() {
     });
     s.on('message:reactions', updateReactions);
     s.on('message:deleted', m => { setUsers(items => items.map(item => item.lastMessage?.id === m.id || item.lastMessage?._id === m.id ? { ...item, lastMessage: { ...item.lastMessage, text: undefined, deleted: true } } : item)); deletedIds.current.add(m.id); setMessages(prev => prev.map(item => item.id === m.id ? { ...item, text: undefined, deleted: true, reactions: {} } : item)); });
-    s.on('message:new', m => { setUsers(items => items.map(item => item.id === (m.from === user.id ? m.to : m.from) ? { ...item, lastMessage: m } : item)); if (m.from === active.current || m.to === active.current) setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m]); });
+    s.on('message:new', receiveMessage);
     return () => { clearInterval(timer); s.disconnect(); socket.current = null; };
   }, [user?.id]);
   useEffect(() => {
-    active.current = peer?.id; setMessages([]); setDraft(''); setMessageSearch(''); setShowMessageSearch(false); setEmojiOpen(false); if (!peer) return;
+    active.current = peer?.id; setMessages([]); setDraft(''); setMessageSearch(''); setShowMessageSearch(false); setEmojiOpen(false); setAttachment(null); if (!peer) return;
     let ignore = false; setHistoryLoading(true); setError('');
     api(`messages?with=${peer.id}`).then(r => { if (!ignore) setMessages(prev => { const unique = new Map([...r.messages, ...prev].map(m => { const update = reactionUpdates.current.get(m.id); const current = update && update.reactionVersion > (m.reactionVersion || 0) ? { ...m, ...update } : m; return [m.id, deletedIds.current.has(m.id) ? { ...current, text: undefined, deleted: true, reactions: {} } : current]; })); return [...unique.values()].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt)); }); }).catch(e => { if (!ignore) setError(e.message); }).finally(() => { if (!ignore) setHistoryLoading(false); });
     return () => { ignore = true; };
@@ -84,6 +88,18 @@ export default function Home() {
     setDraft(next.text);
     requestAnimationFrame(() => { input.focus(); input.setSelectionRange(next.start, next.end); });
   }
+  function receiveMessage(message) {
+    const m=deletedIds.current.has(message.id) ? { ...message,text:undefined,deleted:true,reactions:{} } : message;
+    setUsers(items=>items.map(item=>item.id===(m.from===user.id?m.to:m.from)?{...item,lastMessage:m}:item));
+    if(m.from===active.current||m.to===active.current)setMessages(prev=>prev.some(item=>item.id===m.id)?prev:[...prev,m]);
+  }
+  function chooseAttachment(e) {
+    const file=e.target.files?.[0];e.target.value='';if(!file)return;
+    const image=['image/jpeg','image/png','image/webp'].includes(file.type),video=['video/mp4','video/webm'].includes(file.type);
+    if(!image&&!video){setError('Choose a JPG, PNG, WebP, MP4 or WebM file.');return;}
+    if(file.size>(image?5:10)*1024*1024){setError(image?'Photos must be 5 MB or smaller.':'Videos must be 10 MB or smaller.');return;}
+    setError('');setAttachment(file);
+  }
   function send(event) {
     event.preventDefault(); if (!draft.trim() || !peer || !connected || busy) return;
     setBusy(true); setError(''); const text = draft;
@@ -97,7 +113,7 @@ export default function Home() {
     setDraft(next); setEmojiOpen(false);
     requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(start + emoji.length, start + emoji.length); });
   }
-  const previewText = message => !message ? 'Say hello 👋' : message.deleted ? 'This message was deleted' : message.text?.replace(/\*/g, '') || '';
+  const previewText = message => !message ? 'Say hello 👋' : message.deleted ? 'This message was deleted' : `${message.mediaType === 'image' ? '📷 ' : message.mediaType === 'video' ? '🎬 ' : ''}${message.text?.replace(/\*/g, '').replace(/^[📷🎬]\s*/u,'') || ''}`;
   const visibleUsers = users.filter(u => `${u.name} ${u.email}`.toLowerCase().includes(search.toLowerCase()) && (chatFilter === 'all' || u.lastMessage)).sort((a, b) => new Date(b.lastMessage?.createdAt || 0) - new Date(a.lastMessage?.createdAt || 0));
   const visibleMessages = messages.filter(m => !messageSearch || (!m.deleted && m.text?.toLowerCase().includes(messageSearch.toLowerCase())));
   if (loading) return <div className="loading"><span className="brand">hello<span>✳</span></span><p>Opening your space…</p></div>;
@@ -121,10 +137,10 @@ export default function Home() {
       <header className="chat-header"><button className="back" aria-label="Back to people" onClick={() => setPeer(null)}><Icon name="back"/></button><Avatar person={peer}/><div className="chat-peer"><h2>{peer.name}</h2><p>Click, type, stay in touch</p></div><button className="icon-button" aria-label="Search this conversation" title="Search messages" onClick={() => setShowMessageSearch(v => !v)}><Icon name="search"/></button></header>
       {showMessageSearch && <div className="message-search"><Icon name="search" size={18}/><input aria-label="Search loaded messages" placeholder="Search the latest 100 messages" value={messageSearch} onChange={e => setMessageSearch(e.target.value)}/><button className="icon-button" aria-label="Close message search" onClick={() => { setShowMessageSearch(false); setMessageSearch(''); }}><Icon name="close" size={18}/></button></div>}
       <div className="messages"><div className="conversation-notice">Your conversation with {peer.name}. Make it a good one.</div>{historyLoading && <p className="history-loading">Loading conversation…</p>}{!historyLoading && !messages.length && <div className="conversation-start"><Avatar person={peer} className="large"/><h3>Say hello to {peer.name.split(' ')[0]} 👋</h3><p>A new conversation starts with you.</p></div>}
-      {visibleMessages.map((m,index) => <div key={m.id}>{(index === 0 || new Date(visibleMessages[index-1].createdAt).toDateString() !== new Date(m.createdAt).toDateString()) && <div className="date-divider"><span>{new Date(m.createdAt).toLocaleDateString([], { day:'numeric', month:'long', year:'numeric' })}</span></div>}<div className={`message-row ${m.from === user.id ? 'mine' : ''}`}><div className="bubble"><p className={m.deleted ? 'deleted-text' : undefined}>{m.deleted ? 'This message was deleted' : formatMessage(m.text)}</p><div className="message-meta"><time>{new Date(m.createdAt).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}</time>{m.from === user.id && <span className="sent-check" title="Saved to server"><Icon name="check" size={15}/></span>}</div>{m.from === user.id && !m.deleted && <button type="button" className="delete-message" disabled={!connected || deleting !== null} onClick={() => deleteMessage(m.id)}>{deleting === m.id ? 'Deleting…' : 'Delete for everyone'}</button>}{!m.deleted && <ReactionBar message={m} userId={user.id} disabled={!connected || reacting !== null} onReact={reactToMessage}/>}</div></div></div>)}{messageSearch && !visibleMessages.length && <p className="no-results">No matching messages.</p>}<div ref={end}/></div>
+      {visibleMessages.map((m,index) => <div key={m.id}>{(index === 0 || new Date(visibleMessages[index-1].createdAt).toDateString() !== new Date(m.createdAt).toDateString()) && <div className="date-divider"><span>{new Date(m.createdAt).toLocaleDateString([], { day:'numeric', month:'long', year:'numeric' })}</span></div>}<div className={`message-row ${m.from === user.id ? 'mine' : ''}`}><div className="bubble">{!m.deleted && m.mediaType && <MessageMedia message={m}/>}<p className={m.deleted ? 'deleted-text' : undefined}>{m.deleted ? 'This message was deleted' : formatMessage(m.text)}</p><div className="message-meta"><time>{new Date(m.createdAt).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}</time>{m.from === user.id && <span className="sent-check" title="Saved to server"><Icon name="check" size={15}/></span>}</div>{m.from === user.id && !m.deleted && <button type="button" className="delete-message" disabled={!connected || deleting !== null} onClick={() => deleteMessage(m.id)}>{deleting === m.id ? 'Deleting…' : 'Delete for everyone'}</button>}{!m.deleted && <ReactionBar message={m} userId={user.id} disabled={!connected || reacting !== null} onReact={reactToMessage}/>}</div></div></div>)}{messageSearch && !visibleMessages.length && <p className="no-results">No matching messages.</p>}<div ref={end}/></div>
       {error && <p className="error chat-error" role="alert">{error}</p>}
       <div className="composer-area">{emojiOpen && <div className="composer-emojis" role="group" aria-label="Insert emoji">{['😀','😄','😂','🥰','❤️','👍','🙏','🎉','👋','😡','😊','✨'].map(emoji => <button type="button" key={emoji} aria-label={`Insert ${emoji}`} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}<button type="button" aria-label="Close emoji picker" onClick={() => setEmojiOpen(false)}>×</button></div>}
-      <form className="composer" onSubmit={send}><button type="button" className="emoji-toggle" aria-label="Insert emoji" aria-expanded={emojiOpen} onClick={() => setEmojiOpen(v => !v)}><Icon name="smile" size={25}/></button><div className="composer-content"><div className="format-toolbar" role="toolbar" aria-label="Text formatting"><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('**')} aria-label="Bold" title="Bold (Ctrl/⌘ + B)"><strong>B</strong></button><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('*')} aria-label="Italic" title="Italic (Ctrl/⌘ + I)"><em>I</em></button><span>Select text to format</span></div><textarea ref={composerInput} aria-label="Message" placeholder="Type a message" value={draft} onChange={e => setDraft(e.target.value)} maxLength={2000} rows={1} onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && ['b','i'].includes(e.key.toLowerCase())) { e.preventDefault(); formatDraft(e.key.toLowerCase() === 'b' ? '**' : '*'); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }}/>{draft.includes('*') && <div className="format-preview"><span>Preview</span><p>{formatMessage(draft)}</p></div>}</div><button className="send-button" type="submit" disabled={!connected || !draft.trim() || busy} aria-label="Send message"><Icon name="send"/></button></form><footer className="composer-hint">Enter to send · Shift + Enter for a new line</footer></div>
+      <form className="composer" onSubmit={send}><input ref={mediaInput} hidden type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" aria-label="Choose photo or video" onChange={chooseAttachment}/><button type="button" className="attach-button" aria-label="Attach photo or video" title="Send a photo or video" disabled={!connected} onClick={() => mediaInput.current.click()}><Icon name="attach" size={22}/></button><button type="button" className="emoji-toggle" aria-label="Insert emoji" aria-expanded={emojiOpen} onClick={() => setEmojiOpen(v => !v)}><Icon name="smile" size={25}/></button><div className="composer-content"><div className="format-toolbar" role="toolbar" aria-label="Text formatting"><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('**')} aria-label="Bold" title="Bold (Ctrl/⌘ + B)"><strong>B</strong></button><button type="button" onMouseDown={e => e.preventDefault()} onClick={() => formatDraft('*')} aria-label="Italic" title="Italic (Ctrl/⌘ + I)"><em>I</em></button><span>Select text to format</span></div><textarea ref={composerInput} aria-label="Message" placeholder="Type a message" value={draft} onChange={e => setDraft(e.target.value)} maxLength={2000} rows={1} onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && ['b','i'].includes(e.key.toLowerCase())) { e.preventDefault(); formatDraft(e.key.toLowerCase() === 'b' ? '**' : '*'); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }}/>{draft.includes('*') && <div className="format-preview"><span>Preview</span><p>{formatMessage(draft)}</p></div>}</div><button className="send-button" type="submit" disabled={!connected || !draft.trim() || busy} aria-label="Send message"><Icon name="send"/></button></form><footer className="composer-hint">Enter to send · Shift + Enter for a new line</footer></div>
     </> : <div className="welcome"><div className="welcome-illustration"><span className="illustration-chat"><Icon name="chat" size={76}/></span><span className="illustration-small">hello!</span><span className="illustration-dot one"/><span className="illustration-dot two"/></div><h1>Your people.<br/>One conversation away.</h1><p>Send a message, share a reaction, and stay close.<br/>Choose a chat on the left to get started.</p><div className="welcome-features"><span>◉ Real-time messages</span><span>♡ Personal reactions</span></div><div className="welcome-line"><Icon name="laptop" size={17}/> Made for your everyday conversations</div>{error && <p className="error" role="alert">{error}</p>}</div>}</section>
-  </main>{photoOpen && <ProfilePhoto user={user} onClose={() => setPhotoOpen(false)} onSave={setUser}/>}</>;
+  </main>{photoOpen && <ProfilePhoto user={user} onClose={() => setPhotoOpen(false)} onSave={setUser}/>}{attachment && peer && <MediaUpload key={peer.id} file={attachment} recipient={peer} onClose={() => setAttachment(null)} onSent={receiveMessage}/>}</>;
 }

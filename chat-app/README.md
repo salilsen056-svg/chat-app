@@ -29,6 +29,9 @@ Use the sample password only for local development. Keep `.env.local` private.
 - Signup/login with salted scrypt hashes, HttpOnly session cookies and seven-day expiry.
 - PostgreSQL foreign keys, unique email, parameterized SQL, indexes and pooled connections.
 - Persistent private messages, timestamps, deleted-message tombstones and atomic emoji reactions.
+- Photo/video messages with optional captions and preview. JPG/PNG/WebP photos up to 5 MB are validated and reencoded; MP4/WebM videos up to 10 MB are signature-checked and stored as uploaded. Video codec support depends on the browser; unsupported files can still be downloaded.
+- Click a photo or the Download button to download; video controls support seeking through authenticated byte-range responses.
+- Media is stored in PostgreSQL message_media bytea and can only be fetched by the two participants. Deletion removes the blob too. A 250 MB application-wide attachment cap protects the free database; deleting sent media releases attachment capacity.
 - Circular profile photos: validated JPEG/PNG/WebP uploads up to 2 MB, cropped/reencoded to 256px JPEG and stored in bytea.
 - Bold/italic formatting, live preview, composer emoji picker and selected-only message reactions.
 - Sender-only Delete for everyone; Love, Like, Angry and Happy reactions with live counts.
@@ -39,7 +42,7 @@ The single check means saved to the server. Delivery/read receipts, calls, group
 
 ## Database structure
 
-`migrations/001-initial.sql` creates users, sessions and messages. IDs remain 24-character hex strings to preserve legacy account and message references. Messages use JSONB for per-user reactions and bytea in users for photos. An advisory lock serializes schema initialization. Expired sessions are rejected on every authentication and cleaned when a new session is created.
+`migrations/001-initial.sql` creates users, sessions and messages. `002-media.sql` adds attachment metadata and blob storage without changing existing messages. IDs remain 24-character hex strings to preserve legacy account and message references. Messages use JSONB for per-user reactions and bytea in users for photos. An advisory lock serializes schema initialization. Expired sessions are rejected on every authentication and cleaned when a new session is created.
 
 `lib/database.mjs` owns PostgreSQL access; `server.mjs` handles HTTP and sockets. The application has no runtime dependency on MongoDB.
 

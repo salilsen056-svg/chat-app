@@ -3,6 +3,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import next from 'next';
 import { MAX_PHOTO_BYTES, preparePhoto } from './lib/profile-photo.mjs';
 import env from '@next/env';
+import { BODY_LIMIT, prepareMedia, byteRange } from './lib/media.mjs';
 import { store, validId, publicMessage } from './lib/database.mjs';
 import { Server } from 'socket.io';
 import { hashPassword, checkPassword, cookieToken, cleanMessage } from './lib/security.mjs';
@@ -61,6 +62,43 @@ const server = createServer(async (req, res) => {
     const user = await authenticate(req.headers.cookie);
     if (!user) return reply(401, { error: 'Please sign in.' });
     const id = user.id;
+    if (url.pathname === '/api/messages/media' && req.method === 'POST') {
+      limit(`upload:${id}`,10);
+      const to=url.searchParams.get('to');
+      if (!validId(to) || to===id || !await store.user(to)) return reply(400,{error:'Choose a valid recipient.'});
+      if (!req.headers['content-type']?.startsWith('multipart/form-data;')) return reply(400,{error:'Choose a photo or video to upload.'});
+      if (Number(req.headers['content-length'])>BODY_LIMIT) return reply(413,{error:'Upload exceeds the 10 MB limit.'});
+      const chunks=[];let bytes=0;
+      for await (const chunk of req) { bytes+=chunk.length;if(bytes>BODY_LIMIT)return reply(413,{error:'Upload exceeds the 10 MB limit.'});chunks.push(chunk); }
+      let media,caption;
+      try {
+        const data=await new Response(Buffer.concat(chunks),{headers:{'Content-Type':req.headers['content-type']}}).formData();
+        const file=data.get('file');caption=data.get('caption') || '';
+        if (!file || typeof file.arrayBuffer!=='function') throw new Error('Choose a photo or video.');
+        if (typeof caption!=='string' || caption.length>2000) throw new Error('Caption must be at most 2000 characters.');
+        media=await prepareMedia(Buffer.from(await file.arrayBuffer()),file.type,file.name);
+      } catch(e) {return reply(400,{error:e.message.startsWith('Choose') || /limit|smaller|must be|invalid|match/.test(e.message) ? e.message : 'Unable to read this file. Choose a JPG, PNG, WebP, MP4 or WebM.'});}
+      if (!await authenticate(req.headers.cookie)) return reply(401,{error:'Session expired. Please sign in again.'});
+      let message;
+      try {message=await store.sendMedia(id,to,caption.trim(),media);} catch(e) {if(e.message.startsWith('Media storage'))return reply(507,{error:e.message});throw e;}
+      io.to(id).to(to).emit('message:new',message);
+      return reply(200,{message});
+    }
+    if (url.pathname.startsWith('/api/media/') && ['GET','HEAD'].includes(req.method)) {
+      const messageId=url.pathname.slice('/api/media/'.length);
+      if (!validId(messageId))return reply(404,{error:'Media not found.'});
+      const info=await store.mediaInfo(messageId,id);
+      if(!info)return reply(404,{error:'Media not found.'});
+      const range=byteRange(req.headers.range,info.size);
+      if(!range){res.writeHead(416,{'Content-Range':`bytes */${info.size}`,'Cache-Control':'no-store'});return res.end();}
+      const length=range.end-range.start+1;
+      const headers={'Content-Type':info.mediaMime,'Accept-Ranges':'bytes','Content-Length':length,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Disposition':`${url.searchParams.get('download')==='1'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(info.mediaName).replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16))}`};
+      if(range.partial)headers['Content-Range']=`bytes ${range.start}-${range.end}/${info.size}`;
+      if(req.method==='HEAD'){res.writeHead(range.partial?206:200,headers);return res.end();}
+      const file=await store.mediaBytes(messageId,id,range.start,length);
+      if(!file)return reply(404,{error:'Media not found.'});
+      res.writeHead(range.partial?206:200,headers);return res.end(file.data);
+    }
     if (url.pathname.startsWith('/api/avatars/') && req.method === 'GET') {
       const photoId = url.pathname.slice('/api/avatars/'.length);
       if (!validId(photoId)) return reply(404, { error: 'Photo not found.' });
