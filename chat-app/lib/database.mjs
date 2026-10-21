@@ -15,7 +15,7 @@ export async function db() {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(73912231)');
-      for (const file of ['001-initial.sql', '002-media.sql', '003-hidden-messages.sql', '004-status.sql', '005-receipts.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
+      for (const file of ['001-initial.sql', '002-media.sql', '003-hidden-messages.sql', '004-status.sql', '005-receipts.sql', '006-contacts.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
@@ -26,6 +26,10 @@ export async function db() {
 export async function closeDatabase() { if (pool) await pool.end(); pool = undefined; ready = undefined; }
 const one = async (sql, args) => (await (await db()).query(sql, args)).rows[0];
 export const store = {
+  canViewProfile: async (viewer,subject) => viewer===subject || Boolean(await one('SELECT 1 FROM contacts WHERE "ownerId"=$1 AND "contactId"=$2',[viewer,subject])),
+  saveContact: (viewer,subject) => one('INSERT INTO contacts ("ownerId","contactId") VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING "contactId"',[viewer,subject]),
+  removeContact: (viewer,subject) => one('DELETE FROM contacts WHERE "ownerId"=$1 AND "contactId"=$2 RETURNING "contactId"',[viewer,subject]),
+  async profileViewers(subject){return(await(await db()).query('SELECT "ownerId" FROM contacts WHERE "contactId"=$1',[subject])).rows.map(r=>r.ownerId);},
   async receipts(userId,ids,read){return(await(await db()).query('UPDATE messages SET "deliveredAt"=coalesce("deliveredAt",now()),"readAt"=CASE WHEN $3 THEN coalesce("readAt",now()) ELSE "readAt" END WHERE "to"=$1 AND id=ANY($2::text[]) AND NOT deleted AND ("deliveredAt" IS NULL OR ($3 AND "readAt" IS NULL)) RETURNING id,"from","to","deliveredAt","readAt"',[userId,ids,read])).rows;},
   async delivered(userId){return(await(await db()).query('UPDATE messages SET "deliveredAt"=now() WHERE "to"=$1 AND "deliveredAt" IS NULL AND NOT deleted RETURNING id,"from","to","deliveredAt","readAt"',[userId])).rows;},
   health: () => one('SELECT 1 AS ok'),
@@ -42,7 +46,7 @@ export const store = {
   photo: id => one('SELECT photo FROM users WHERE id=$1', [id]),
   setPhoto: (id,photo,version) => one('UPDATE users SET photo=$2,"photoVersion"=$3 WHERE id=$1 RETURNING id,name,email,"photoVersion"', [id,photo,version]),
   async users(id) {
-    const result = await (await db()).query(`SELECT u.id,u.name,u.email,u."photoVersion", row_to_json(latest) AS "lastMessage" FROM users u LEFT JOIN LATERAL
+    const result = await (await db()).query(`SELECT u.id,u.name,u.email,u."photoVersion", EXISTS(SELECT 1 FROM contacts c WHERE c."ownerId"=$1 AND c."contactId"=u.id) AS "savedContact", row_to_json(latest) AS "lastMessage" FROM users u LEFT JOIN LATERAL
       (SELECT id,"from","to",text,deleted,"createdAt","deliveredAt","readAt","mediaType","mediaName","mediaMime","mediaSize" FROM messages WHERE NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$1 AND h."messageId"=messages.id) AND conversation=least(u.id,$1)||':'||greatest(u.id,$1) ORDER BY "createdAt" DESC,id DESC LIMIT 1) latest ON true
       WHERE u.id<>$1 ORDER BY u.name LIMIT 200`, [id]);
     return result.rows;

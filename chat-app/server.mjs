@@ -1,3 +1,4 @@
+import {visibleProfile} from './lib/profile-privacy.mjs';
 import { callConfiguration } from './lib/ice-config.mjs';
 import { statusStore } from './lib/status-store.mjs';
 import { installCalls } from './lib/calls.mjs';
@@ -149,7 +150,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname.startsWith('/api/avatars/') && req.method === 'GET') {
       const photoId = url.pathname.slice('/api/avatars/'.length);
-      if (!validId(photoId)) return reply(404, { error: 'Photo not found.' });
+      if (!validId(photoId) || !await store.canViewProfile(id,photoId)) return reply(404, { error: 'Photo not found.' });
       const owner = await store.photo(photoId);
       if (!owner?.photo) return reply(404, { error: 'Photo not found.' });
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -169,8 +170,18 @@ const server = createServer(async (req, res) => {
         await store.setPhoto(id, photo, randomBytes(12).toString('hex'));
       }
       const updated = publicUser(await store.user(id));
-      io.emit('profile:updated', { id: updated.id, avatarUrl: updated.avatarUrl });
+      io.to([id,...await store.profileViewers(id)]).emit('profile:updated', { id: updated.id, avatarUrl: updated.avatarUrl });
       return reply(200, { user: updated });
+    }
+    if(url.pathname.startsWith('/api/contacts/') && ['POST','DELETE'].includes(req.method)){
+      const contactId=url.pathname.slice('/api/contacts/'.length);
+      if(!validId(contactId)||contactId===id)return reply(400,{error:'Invalid contact.'});
+      const contact=await store.user(contactId);if(!contact)return reply(404,{error:'User not found.'});
+      const saved=req.method==='POST';
+      if(saved)await store.saveContact(id,contactId);else await store.removeContact(id,contactId);
+      const profile={...visibleProfile(contact,saved),savedContact:saved};
+      io.to(id).emit('contact:updated',profile);
+      return reply(200,{user:profile});
     }
     if (url.pathname === '/api/me' && req.method === 'GET') return reply(200, { user: publicUser(user) });
     if (url.pathname === '/api/logout' && req.method === 'POST') {
@@ -180,7 +191,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/users' && req.method === 'GET') {
       const users = await store.users(id);
-      return reply(200, { users: users.map(u => ({ ...publicUser(u), lastMessage: u.lastMessage ? publicMessage(u.lastMessage) : null })) });
+      return reply(200, { users: users.map(u => ({ ...visibleProfile(u,u.savedContact), savedContact:u.savedContact, lastMessage: u.lastMessage ? publicMessage(u.lastMessage) : null })) });
     }
     if (url.pathname === '/api/messages' && req.method === 'GET') {
       const peer = url.searchParams.get('with'); if (!validId(peer || '')) return reply(400, { error: 'Invalid user.' });
@@ -191,7 +202,7 @@ const server = createServer(async (req, res) => {
 });
 const io = new Server(server, { maxHttpBufferSize: 65536, allowRequest: (req, done) => { try { done(null, !req.headers.origin || new URL(req.headers.origin).host === req.headers.host); } catch { done(null, false); } } });
 io.use(async (socket, done) => { try { const user = await authenticate(socket.request.headers.cookie); if (!user) return done(new Error('Please sign in.')); socket.data.user = publicUser(user); done(); } catch { done(new Error('Database unavailable.')); } });
-installCalls(io,authenticate,limit);
+installCalls(io,authenticate,limit,async(subject,viewer)=>visibleProfile(await store.user(subject.id),await store.canViewProfile(viewer,subject.id)));
 io.on('connection', socket => {
   const user = socket.data.user; socket.join(user.id);
   store.delivered(user.id).then(rows=>{for(const m of rows)io.to(m.from).to(user.id).emit('message:receipt',m);}).catch(()=>{});

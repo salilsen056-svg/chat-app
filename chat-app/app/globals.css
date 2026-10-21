@@ -35,3 +35,5 @@
 dialog.call-overlay{margin:0;border:0;width:100vw;height:100dvh;max-width:none;max-height:none;box-sizing:border-box}dialog.call-overlay::backdrop{background:#071a16dc}
 
 .call-person-placeholder{width:100px;height:100px;border-radius:50%;display:grid;place-items:center;background:#ffffff18;font-size:44px;margin:36px auto}.call-buttons button{display:grid;place-items:center}
+
+.header-contact{border:1px solid #b6cfc4;background:#e8f3ed;color:#245642;border-radius:8px;padding:7px 10px;font-size:11px;cursor:pointer;flex-shrink:0}.header-contact:disabled{opacity:.5}
