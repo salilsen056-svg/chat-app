@@ -5,13 +5,16 @@ export function installCalls(io, authenticate, limit) {
  const finish=(call,reason)=>{clearTimeout(call.timer);calls.delete(call.id);busy.delete(call.from);busy.delete(call.to);io.to(call.caller).to(call.callee).emit('call:ended',{id:call.id,reason});};
  io.on('connection',socket=>{
   const user=socket.data.user;
-  socket.on('call:ready',()=>{socket.data.callReady=true;});
+  socket.data.callReady=socket.handshake.auth?.callReady===true;
+  socket.on('call:ready',(ack)=>{socket.data.callReady=true;if(typeof ack==='function')ack({ok:true});});
   const authorized=()=>authenticate(socket.request.headers.cookie);
   socket.on('call:start',async(input,ack)=>{if(typeof ack!=='function')return;try{
    if(!await authorized())throw Error('Please sign in again.');limit(`call:${user.id}`,10);
    if(!/^[0-9a-f]{24}$/.test(input?.to)||input.to===user.id||!['voice','video'].includes(input.kind))throw Error('Invalid call.');
    if(busy.has(user.id)||busy.has(input.to))throw Error('One of you is already on a call.');
-   const target=[...(io.sockets.adapter.rooms.get(input.to)||[])].find(id=>io.sockets.sockets.get(id)?.data.callReady);if(!target)throw Error('This person is offline. Ask them to open the app.');
+   const peers=[...io.sockets.sockets.values()].filter(s=>s.connected&&s.data.user?.id===input.to);
+   const target=peers.find(s=>s.data.callReady)?.id;
+   if(!target)throw Error(peers.length?'This person is connected, but calling is not ready. Ask them to refresh the app.':'This person is not connected right now. Ask them to reopen the app.');
    const call={id:randomBytes(12).toString('hex'),from:user.id,to:input.to,caller:socket.id,callee:target,kind:input.kind,accepted:false};
    calls.set(call.id,call);busy.set(user.id,call.id);busy.set(input.to,call.id);call.timer=setTimeout(()=>finish(call,'No answer'),45000);
    io.to(target).emit('call:incoming',{id:call.id,from:user,kind:call.kind});ack({id:call.id});
