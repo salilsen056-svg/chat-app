@@ -20,6 +20,7 @@ export default function Home() {
   const [search, setSearch] = useState(''), [draft, setDraft] = useState(''), [error, setError] = useState('');
   const [busy, setBusy] = useState(false), [connected, setConnected] = useState(false), [historyLoading, setHistoryLoading] = useState(false);
   const mediaInput = useRef(null);
+  const [liveSocket,setLiveSocket]=useState(null);
   const [attachment, setAttachment] = useState(null), [statusOpen,setStatusOpen]=useState(false);
   const composerInput = useRef(null), reactionUpdates = useRef(new Map());
   const [reacting, setReacting] = useState(null);
@@ -34,7 +35,7 @@ export default function Home() {
     hiddenIds.current = new Set();
     const refresh = () => api('users').then(r => setUsers(r.users)).catch(e => setError(e.message)); refresh();
     const timer = setInterval(refresh, 15000);
-    const s = io(); socket.current = s;
+    const s = io(); socket.current = s; setLiveSocket(s);
     s.on('connect', () => setConnected(true)); s.on('disconnect', () => setConnected(false));
     s.on('connect_error', e => { setConnected(false); setError(e.message); });
     s.on('profile:updated', profile => {
@@ -190,5 +191,5 @@ export default function Home() {
       <div className="composer-area">{emojiOpen && <div className="composer-emojis" role="group" aria-label="Insert emoji">{['😀','😄','😂','🥰','❤️','👍','🙏','🎉','👋','😡','😊','✨'].map(emoji => <button type="button" key={emoji} aria-label={`Insert ${emoji}`} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}<button type="button" aria-label="Close emoji picker" onClick={() => setEmojiOpen(false)}>×</button></div>}
       <form className="composer" onSubmit={send}><input ref={mediaInput} hidden type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" aria-label="Choose photo or video" onChange={chooseAttachment}/><button type="button" className="attach-button" aria-label="Attach photo or video" title="Send a photo or video" disabled={!connected} onClick={() => mediaInput.current.click()}><Icon name="attach" size={22}/></button><button type="button" className="emoji-toggle" aria-label="Insert emoji" aria-expanded={emojiOpen} onClick={() => setEmojiOpen(v => !v)}><Icon name="smile" size={25}/></button><div className="composer-content"><textarea ref={composerInput} aria-label="Message" placeholder="Type a message" value={draft} onChange={e => setDraft(e.target.value)} maxLength={2000} rows={1} onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && ['b','i'].includes(e.key.toLowerCase())) { e.preventDefault(); formatDraft(e.key.toLowerCase() === 'b' ? '**' : '*'); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }}/>{draft.includes('*') && <div className="format-preview"><span>Preview</span><p>{formatMessage(draft)}</p></div>}</div><button className="send-button" type="submit" disabled={!connected || !draft.trim() || busy} aria-label="Send message"><Icon name="send"/></button></form><footer className="composer-hint">Enter to send · Shift + Enter for a new line</footer></div>
     </> : <div className="welcome"><div className="welcome-illustration"><span className="illustration-chat"><Icon name="chat" size={76}/></span><span className="illustration-small">hello!</span><span className="illustration-dot one"/><span className="illustration-dot two"/></div><h1>Your people.<br/>One conversation away.</h1><p>Send a message, share a reaction, and stay close.<br/>Choose a chat on the left to get started.</p><div className="welcome-features"><span>◉ Real-time messages</span><span>♡ Personal reactions</span></div><div className="welcome-line"><Icon name="laptop" size={17}/> Made for your everyday conversations</div>{error && <p className="error" role="alert">{error}</p>}</div>}</section>
-  </main><Calling user={user} peer={peer}/>{statusOpen&&<StatusPanel user={user} onClose={()=>setStatusOpen(false)}/ >}{photoOpen && <ProfilePhoto user={user} onClose={() => setPhotoOpen(false)} onSave={setUser}/>}{attachment && peer && <MediaUpload key={peer.id} file={attachment} recipient={peer} onClose={() => setAttachment(null)} onSent={receiveMessage}/>}</>;
+  </main>{liveSocket&&<Calling user={user} peer={peer} connection={liveSocket}/>}{statusOpen&&<StatusPanel user={user} onClose={()=>setStatusOpen(false)}/ >}{photoOpen && <ProfilePhoto user={user} onClose={() => setPhotoOpen(false)} onSave={setUser}/>}{attachment && peer && <MediaUpload key={peer.id} file={attachment} recipient={peer} onClose={() => setAttachment(null)} onSent={receiveMessage}/>}</>;
 }

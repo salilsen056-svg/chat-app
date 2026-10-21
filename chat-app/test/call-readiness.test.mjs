@@ -24,7 +24,22 @@ test('call readiness survives reconnect and distinguishes connected old clients'
   callee.connect();await once(callee,'connect');
   incoming=once(callee,'call:incoming');call=await emit(caller,'call:start',{to:b,kind:'video'});assert.ok(call.id);await incoming;
   const endedAgain=once(caller,'call:ended');callee.disconnect();await endedAgain;
-  chatOnly.disconnect();
+  callee.connect();await once(callee,'connect');
+  await new Promise(resolve=>chatOnly.emit('call:ready',resolve));
+  for(const kind of ['voice','video']){
+   const firstRing=once(chatOnly,'call:incoming'),secondRing=once(callee,'call:incoming');
+   call=await emit(caller,'call:start',{to:b,kind});assert.ok(call.id);
+   await Promise.all([firstRing,secondRing]);
+   const answered=once(caller,'call:accepted'),otherStopped=once(chatOnly,'call:ended');
+   assert.equal((await emit(callee,'call:accept',{id:call.id})).ok,true);
+   await answered;assert.equal((await otherStopped)[0].reason,'Answered on another device');
+   assert.ok((await emit(chatOnly,'call:accept',{id:call.id})).error);
+   assert.ok((await emit(chatOnly,'call:signal',{id:call.id,signal:{type:'answer',sdp:'fake'}})).error);
+   const received=once(callee,'call:signal');
+   assert.equal((await emit(caller,'call:signal',{id:call.id,signal:{type:'offer',sdp:'test'}})).ok,true);await received;
+   const done=once(caller,'call:ended');callee.emit('call:end',{id:call.id});await done;
+  }
+  callee.disconnect();chatOnly.disconnect();
   // Acknowledgement proves the server has registered the listener.
   await new Promise(resolve=>caller.timeout(2000).emit('call:ready',(err,result)=>{assert.ifError(err);assert.equal(result.ok,true);resolve();}));
   assert.match((await emit(caller,'call:start',{to:b,kind:'voice'})).error,/not connected right now/);
