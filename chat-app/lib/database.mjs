@@ -34,6 +34,7 @@ export const store = {
   async delivered(userId){return(await(await db()).query('UPDATE messages SET "deliveredAt"=now() WHERE "to"=$1 AND "deliveredAt" IS NULL AND NOT deleted RETURNING id,"from","to","deliveredAt","readAt"',[userId])).rows;},
   health: () => one('SELECT 1 AS ok'),
   user: id => one('SELECT id,name,email,"photoVersion" FROM users WHERE id=$1', [id]),
+  contactByEmail: email => one('SELECT id,name,email,"photoVersion" FROM users WHERE email=$1',[email]),
   login: email => one('SELECT id,name,email,password,"photoVersion" FROM users WHERE email=$1', [email]),
   createUser: (name,email,password) => one('INSERT INTO users (id,name,email,password) VALUES ($1,$2,$3,$4) RETURNING id,name,email,"photoVersion"', [newId(),name,email,password]),
   authenticate: digest => one('SELECT u.id,u.name,u.email,u."photoVersion" FROM sessions s JOIN users u ON u.id=s."userId" WHERE s.id=$1 AND s."expiresAt">now()', [digest]),
@@ -48,7 +49,7 @@ export const store = {
   async users(id) {
     const result = await (await db()).query(`SELECT u.id,u.name,u.email,u."photoVersion", EXISTS(SELECT 1 FROM contacts c WHERE c."ownerId"=$1 AND c."contactId"=u.id) AS "savedContact", row_to_json(latest) AS "lastMessage" FROM users u LEFT JOIN LATERAL
       (SELECT id,"from","to",text,deleted,"createdAt","deliveredAt","readAt","mediaType","mediaName","mediaMime","mediaSize" FROM messages WHERE NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$1 AND h."messageId"=messages.id) AND conversation=least(u.id,$1)||':'||greatest(u.id,$1) ORDER BY "createdAt" DESC,id DESC LIMIT 1) latest ON true
-      WHERE u.id<>$1 ORDER BY u.name LIMIT 200`, [id]);
+      WHERE u.id<>$1 AND (EXISTS(SELECT 1 FROM contacts c WHERE c."ownerId"=$1 AND c."contactId"=u.id) OR latest.id IS NOT NULL) ORDER BY u.name LIMIT 200`, [id]);
     return result.rows;
   },
   async history(id,peer) {

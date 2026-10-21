@@ -37,3 +37,5 @@ dialog.call-overlay{margin:0;border:0;width:100vw;height:100dvh;max-width:none;m
 .call-person-placeholder{width:100px;height:100px;border-radius:50%;display:grid;place-items:center;background:#ffffff18;font-size:44px;margin:36px auto}.call-buttons button{display:grid;place-items:center}
 
 .header-contact{border:1px solid #b6cfc4;background:#e8f3ed;color:#245642;border-radius:8px;padding:7px 10px;font-size:11px;cursor:pointer;flex-shrink:0}.header-contact:disabled{opacity:.5}
+
+.add-contact-form{padding:12px 18px;display:grid;gap:8px}.add-contact-form label{font-size:12px}.add-contact-form input{display:block;width:100%;padding:9px;margin-top:6px;border:1px solid #b6cfc4;border-radius:6px}.add-contact-form button{padding:8px;background:#245642;color:white;border:0;border-radius:6px}

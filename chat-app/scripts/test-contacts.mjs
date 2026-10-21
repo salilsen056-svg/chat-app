@@ -14,7 +14,7 @@ try{
  assert.equal((await req(a,avatar)).status,200);
  assert.equal((await req(b,avatar)).status,404);
  const profile=async viewer=>(await(await req(viewer,'/api/users')).json()).users.find(u=>u.id===a.user.id);
- assert.equal((await profile(b)).email,null);assert.equal((await profile(b)).avatarUrl,null);
+ assert.equal(await profile(b),undefined);
  assert.equal((await req(b,`/api/contacts/${a.user.id}`,{method:'POST'})).status,200);
  assert.equal((await req(b,`/api/contacts/${a.user.id}`,{method:'POST'})).status,200);
  assert.equal((await profile(b)).savedContact,true);assert.equal((await profile(b)).email,a.user.email);
@@ -22,7 +22,13 @@ try{
  // Saving is directional: A saving C does not give C access to A.
  await req(a,`/api/contacts/${c.user.id}`,{method:'POST'});assert.equal((await req(c,avatar)).status,404);
  assert.equal((await req(b,`/api/contacts/${a.user.id}`,{method:'DELETE'})).status,200);
- assert.equal((await req(b,avatar)).status,404);assert.equal((await profile(b)).email,null);
+ assert.equal((await req(b,avatar)).status,404);assert.equal(await profile(b),undefined);
  assert.equal((await req(b,`/api/contacts/${b.user.id}`,{method:'POST'})).status,400);
+ const added=await req(b,'/api/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:a.user.email})});assert.equal(added.status,200);
+ const list=(await(await req(b,'/api/users')).json()).users;assert.deepEqual(list.map(u=>u.id),[a.user.id]);
+ await pool.query('INSERT INTO messages (id,"from","to",conversation,text) VALUES ($1,$2,$3,$4,$5)',['d'.repeat(24),a.user.id,c.user.id,[a.user.id,c.user.id].sort().join(':'),'private A C']);
+ const hidden=(await(await req(b,'/api/messages?with='+c.user.id)).json()).messages;assert.equal(hidden.length,0);
+ assert.equal((await(await req(b,'/api/users')).json()).users.some(u=>u.id===c.user.id),false);
+ await pool.query('DELETE FROM messages WHERE id=$1',['d'.repeat(24)]);
  console.log('PASS: private profile, direct photo access, directional save, duplicate save, third-party denial, and removal revocation');
-}finally{for(const a of actors)await pool.query('DELETE FROM users WHERE id=$1',[a.user.id]);await pool.end();}
+}finally{for(const a of actors){await pool.query('DELETE FROM messages WHERE "from"=$1 OR "to"=$1',[a.user.id]);await pool.query('DELETE FROM users WHERE id=$1',[a.user.id]);}await pool.end();}
