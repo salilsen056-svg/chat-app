@@ -17,3 +17,5 @@ Free Render PostgreSQL expires after 30 days and has 1 GB storage. Back up or up
 Local MongoDB records are not automatically uploaded to Render. Use the optional read-only-source import described in README.md if you want to migrate existing data. Never commit DATABASE_URL, legacy database credentials or `.env.local`.
 
 Voice/video calling: HTTPS is required for camera/microphone access. Calls require both participants online with the app open. Optional TURN_URL, TURN_USERNAME, TURN_CREDENTIAL secrets enable relay fallback across restrictive networks; no relay service is included by default. Statuses and persisted read receipts use additive migrations 004/005 on startup.
+
+Metered/Open Relay: set METERED_DOMAIN to your dashboard application domain (hostname only, e.g. your-app.metered.live) and METERED_API_KEY to its TURN API key in Render Environment. The backend fetches ICE credentials with an 8-second timeout and 60-second cache; the API key never reaches the browser. A complete static TURN_URL/TURN_USERNAME/TURN_CREDENTIAL configuration takes precedence. Deploy after changing the variables.

@@ -1,3 +1,4 @@
+import { callConfiguration } from './lib/ice-config.mjs';
 import { statusStore } from './lib/status-store.mjs';
 import { installCalls } from './lib/calls.mjs';
 import { createServer } from 'node:http';
@@ -68,9 +69,7 @@ const server = createServer(async (req, res) => {
     if (!user) return reply(401, { error: 'Please sign in.' });
     const id = user.id;
     if(url.pathname==='/api/calls/config' && req.method==='GET') {
-      const iceServers=[{urls:'stun:stun.l.google.com:19302'}];
-      if(process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL)iceServers.push({urls:process.env.TURN_URL.split(','),username:process.env.TURN_USERNAME,credential:process.env.TURN_CREDENTIAL});
-      return reply(200,{iceServers});
+      try{return reply(200,await callConfiguration());}catch{return reply(503,{error:'Call relay is unavailable. Check the TURN server configuration.'});}
     }
     if(url.pathname==='/api/statuses'){
       if(req.method==='GET')return reply(200,{statuses:await statusStore.list()});
@@ -190,7 +189,7 @@ const server = createServer(async (req, res) => {
     reply(404, { error: 'Not found.' });
   } catch (e) { console.error(e.message); if(res.headersSent){res.destroy();return;} reply(503, { error: /DATABASE_URL/.test(e.message) ? e.message : 'Unable to complete the request. Check the database connection or try again shortly.' }); }
 });
-const io = new Server(server, { maxHttpBufferSize: 16000, allowRequest: (req, done) => { try { done(null, !req.headers.origin || new URL(req.headers.origin).host === req.headers.host); } catch { done(null, false); } } });
+const io = new Server(server, { maxHttpBufferSize: 65536, allowRequest: (req, done) => { try { done(null, !req.headers.origin || new URL(req.headers.origin).host === req.headers.host); } catch { done(null, false); } } });
 io.use(async (socket, done) => { try { const user = await authenticate(socket.request.headers.cookie); if (!user) return done(new Error('Please sign in.')); socket.data.user = publicUser(user); done(); } catch { done(new Error('Database unavailable.')); } });
 installCalls(io,authenticate,limit);
 io.on('connection', socket => {
