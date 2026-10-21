@@ -1,3 +1,5 @@
+import { statusStore } from './lib/status-store.mjs';
+import { installCalls } from './lib/calls.mjs';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -65,6 +67,38 @@ const server = createServer(async (req, res) => {
     const user = await authenticate(req.headers.cookie);
     if (!user) return reply(401, { error: 'Please sign in.' });
     const id = user.id;
+    if(url.pathname==='/api/calls/config' && req.method==='GET') {
+      const iceServers=[{urls:'stun:stun.l.google.com:19302'}];
+      if(process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL)iceServers.push({urls:process.env.TURN_URL.split(','),username:process.env.TURN_USERNAME,credential:process.env.TURN_CREDENTIAL});
+      return reply(200,{iceServers});
+    }
+    if(url.pathname==='/api/statuses'){
+      if(req.method==='GET')return reply(200,{statuses:await statusStore.list()});
+      if(req.method==='POST'){
+        limit('status:'+id,10);const chunks=[];let size=0;
+        for await(const chunk of req){size+=chunk.length;if(size>BODY_LIMIT)return reply(413,{error:'Upload exceeds 10 MB.'});chunks.push(chunk);}
+        let text,media;
+        try{
+          const data=await new Response(Buffer.concat(chunks),{headers:{'Content-Type':req.headers['content-type']||''}}).formData();
+          text=data.get('text')||'';if(typeof text!=='string'||text.length>2000)throw Error('Status must be at most 2000 characters.');
+          text=text.trim();const file=data.get('file');if(file?.size)media=await prepareMedia(Buffer.from(await file.arrayBuffer()),file.type,file.name);
+          if(!text&&!media)throw Error('Add text, a photo or a video.');
+        }catch(e){return reply(400,{error:e.message});}
+        if(!await authenticate(req.headers.cookie))return reply(401,{error:'Please sign in again.'});
+        try{const status=await statusStore.create(id,text,media);io.emit('status:updated');return reply(200,status);}catch(e){if(e.message.startsWith('Media storage'))return reply(507,{error:e.message});throw e;}
+      }
+    }
+    if(url.pathname.startsWith('/api/statuses/')){
+      const parts=url.pathname.split('/'),statusId=parts[3];if(!validId(statusId))return reply(404,{error:'Status not found.'});
+      if(parts.length===4 && req.method==='DELETE'){if(!await statusStore.remove(statusId,id))return reply(404,{error:'Status not found.'});io.emit('status:updated');return reply(200,{ok:true});}
+      if(parts[4]==='media' && parts.length===5 && ['GET','HEAD'].includes(req.method)){
+        const media=await statusStore.media(statusId);if(!media)return reply(404,{error:'Status expired or removed.'});
+        const range=byteRange(req.headers.range,media.data.length);if(!range){res.writeHead(416,{'Content-Range':'bytes */'+media.data.length});return res.end();}
+        const headers={'Content-Type':media.mediaMime,'Content-Length':range.end-range.start+1,'Accept-Ranges':'bytes','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'};
+        if(range.partial)headers['Content-Range']='bytes '+range.start+'-'+range.end+'/'+media.data.length;
+        res.writeHead(range.partial?206:200,headers);return res.end(req.method==='HEAD'?undefined:media.data.subarray(range.start,range.end+1));
+      }
+    }
     if (url.pathname === '/api/messages/export' && req.method === 'GET') {
       limit(`export:${id}`,10);
       const peerId=url.searchParams.get('with');
@@ -158,8 +192,22 @@ const server = createServer(async (req, res) => {
 });
 const io = new Server(server, { maxHttpBufferSize: 16000, allowRequest: (req, done) => { try { done(null, !req.headers.origin || new URL(req.headers.origin).host === req.headers.host); } catch { done(null, false); } } });
 io.use(async (socket, done) => { try { const user = await authenticate(socket.request.headers.cookie); if (!user) return done(new Error('Please sign in.')); socket.data.user = publicUser(user); done(); } catch { done(new Error('Database unavailable.')); } });
+installCalls(io,authenticate,limit);
 io.on('connection', socket => {
   const user = socket.data.user; socket.join(user.id);
+  store.delivered(user.id).then(rows=>{for(const m of rows)io.to(m.from).to(user.id).emit('message:receipt',m);}).catch(()=>{});
+
+  socket.on('message:receipts',async(input,ack)=>{
+    if(typeof ack!=='function')return;
+    try{
+      if(!await authenticate(socket.request.headers.cookie))throw Error('Session expired.');
+      limit('receipts:'+user.id,120);
+      if(!Array.isArray(input?.ids)||input.ids.length>100||input.ids.some(id=>!validId(id)))throw Error('Invalid receipt.');
+      const rows=await store.receipts(user.id,input.ids,input.read===true);
+      for(const m of rows)io.to(m.from).to(user.id).emit('message:receipt',m);
+      ack({ok:true});
+    }catch(e){ack({error:e.message});}
+  });
   socket.on('message:react', async (input, ack) => {
     if (typeof ack !== 'function') return;
     try {

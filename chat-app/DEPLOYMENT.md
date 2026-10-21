@@ -15,3 +15,5 @@ Database external access is blocked by `ipAllowList: []`. The app uses Render's 
 Free Render PostgreSQL expires after 30 days and has 1 GB storage. Back up or upgrade before expiry; expired free databases are eventually deleted. The free web service can sleep after inactivity. Paid upgrades require your choice.
 
 Local MongoDB records are not automatically uploaded to Render. Use the optional read-only-source import described in README.md if you want to migrate existing data. Never commit DATABASE_URL, legacy database credentials or `.env.local`.
+
+Voice/video calling: HTTPS is required for camera/microphone access. Calls require both participants online with the app open. Optional TURN_URL, TURN_USERNAME, TURN_CREDENTIAL secrets enable relay fallback across restrictive networks; no relay service is included by default. Statuses and persisted read receipts use additive migrations 004/005 on startup.

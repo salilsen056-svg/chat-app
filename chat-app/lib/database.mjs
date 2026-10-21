@@ -15,7 +15,7 @@ export async function db() {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(73912231)');
-      for (const file of ['001-initial.sql', '002-media.sql', '003-hidden-messages.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
+      for (const file of ['001-initial.sql', '002-media.sql', '003-hidden-messages.sql', '004-status.sql', '005-receipts.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
@@ -26,6 +26,8 @@ export async function db() {
 export async function closeDatabase() { if (pool) await pool.end(); pool = undefined; ready = undefined; }
 const one = async (sql, args) => (await (await db()).query(sql, args)).rows[0];
 export const store = {
+  async receipts(userId,ids,read){return(await(await db()).query('UPDATE messages SET "deliveredAt"=coalesce("deliveredAt",now()),"readAt"=CASE WHEN $3 THEN coalesce("readAt",now()) ELSE "readAt" END WHERE "to"=$1 AND id=ANY($2::text[]) AND NOT deleted AND ("deliveredAt" IS NULL OR ($3 AND "readAt" IS NULL)) RETURNING id,"from","to","deliveredAt","readAt"',[userId,ids,read])).rows;},
+  async delivered(userId){return(await(await db()).query('UPDATE messages SET "deliveredAt"=now() WHERE "to"=$1 AND "deliveredAt" IS NULL AND NOT deleted RETURNING id,"from","to","deliveredAt","readAt"',[userId])).rows;},
   health: () => one('SELECT 1 AS ok'),
   user: id => one('SELECT id,name,email,"photoVersion" FROM users WHERE id=$1', [id]),
   login: email => one('SELECT id,name,email,password,"photoVersion" FROM users WHERE email=$1', [email]),
@@ -41,7 +43,7 @@ export const store = {
   setPhoto: (id,photo,version) => one('UPDATE users SET photo=$2,"photoVersion"=$3 WHERE id=$1 RETURNING id,name,email,"photoVersion"', [id,photo,version]),
   async users(id) {
     const result = await (await db()).query(`SELECT u.id,u.name,u.email,u."photoVersion", row_to_json(latest) AS "lastMessage" FROM users u LEFT JOIN LATERAL
-      (SELECT id,"from","to",text,deleted,"createdAt","mediaType","mediaName","mediaMime","mediaSize" FROM messages WHERE NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$1 AND h."messageId"=messages.id) AND conversation=least(u.id,$1)||':'||greatest(u.id,$1) ORDER BY "createdAt" DESC,id DESC LIMIT 1) latest ON true
+      (SELECT id,"from","to",text,deleted,"createdAt","deliveredAt","readAt","mediaType","mediaName","mediaMime","mediaSize" FROM messages WHERE NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$1 AND h."messageId"=messages.id) AND conversation=least(u.id,$1)||':'||greatest(u.id,$1) ORDER BY "createdAt" DESC,id DESC LIMIT 1) latest ON true
       WHERE u.id<>$1 ORDER BY u.name LIMIT 200`, [id]);
     return result.rows;
   },
@@ -57,7 +59,7 @@ export const store = {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(73912232)');
-      const used=await client.query('SELECT coalesce(sum(octet_length(data)),0) AS bytes FROM message_media');
+      const used=await client.query('SELECT (SELECT coalesce(sum(octet_length(data)),0) FROM message_media)+(SELECT coalesce(sum(octet_length(data)),0) FROM statuses WHERE "expiresAt">now()) AS bytes');
       if (Number(used.rows[0].bytes)+media.data.length>250*1024*1024) throw new Error('Media storage is full. Delete some sent media before uploading more.');
       const result=await client.query('INSERT INTO messages (id,"from","to",text,conversation,"mediaType","mediaName","mediaMime","mediaSize") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *', [newId(),from,to,text || (media.type==='image' ? '📷 Photo' : '🎬 Video'),[from,to].sort().join(':'),media.type,media.name,media.mime,media.data.length]);
       await client.query('INSERT INTO message_media ("messageId",data) VALUES ($1,$2)', [result.rows[0].id,media.data]);

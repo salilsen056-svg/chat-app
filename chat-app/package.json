@@ -7,10 +7,11 @@
     "dev": "node server.mjs",
     "build": "next build",
     "start": "NODE_ENV=production node server.mjs",
-    "test": "node --test",
+    "test": "node --test test/*.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:import-mongodb": "node scripts/import-mongodb.mjs",
-    "test:database": "node --test test/database.integration.mjs"
+    "test:database": "node --test test/database.integration.mjs",
+    "test:features": "node scripts/test-features.mjs"
   },
   "dependencies": {
     "@next/env": "^16.0.0",

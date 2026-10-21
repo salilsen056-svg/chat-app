@@ -82,3 +82,11 @@ npm run build
 # Optional real-PostgreSQL repository tests; requires a disposable test database:
 TEST_DATABASE_URL=postgresql://... npm run test:database
 ```
+
+## Status, calling and message receipts
+- Status updates support text and validated photo/video attachments. Every signed-in account can view them; they expire after 24 hours. Only the owner may delete an update. Expired blobs are purged on feed access or upload. Status media shares the 250 MB attachment budget.
+- Voice/video calls use authenticated Socket.IO signaling and browser WebRTC. Both people must keep the app open. Accept/reject, busy/offline handling, end call, mute, camera toggle and disconnect cleanup are included. Calls are not recorded.
+- One grey tick means saved; two grey ticks mean delivered to the recipient's connected app; blue double ticks mean the message was visible in their focused chat. Read timestamps persist in PostgreSQL and only the recipient can update them.
+- STUN is configured by default. For calls across networks that block direct peer connections, configure a TURN relay with TURN_URL, TURN_USERNAME and TURN_CREDENTIAL in server secrets. Credentials are sent only to authenticated callers; prefer a dedicated limited-quota relay account and rotate them. TURN is not provisioned automatically.
+- The production service runs one instance; call state is held in memory and active calls end during restarts/deploys. Multi-instance deployment requires shared signaling/call coordination.
+- Verification: npm test; TEST_DATABASE_URL=... npm run test:database; with the app running against the same disposable database on port 3002, TEST_DATABASE_URL=... npm run test:features. The feature test creates and removes only its own synthetic accounts and records.
