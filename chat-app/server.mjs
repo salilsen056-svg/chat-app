@@ -173,13 +173,20 @@ const server = createServer(async (req, res) => {
       io.to([id,...await store.profileViewers(id)]).emit('profile:updated', { id: updated.id, avatarUrl: updated.avatarUrl });
       return reply(200, { user: updated });
     }
+    if(url.pathname.startsWith('/api/chats/') && req.method==='DELETE'){
+      const peerId=url.pathname.slice('/api/chats/'.length);
+      if(!validId(peerId)||peerId===id)return reply(400,{error:'Invalid conversation.'});
+      await store.deleteChat(id,peerId);
+      io.to(id).emit('chat:deleted',{with:peerId});
+      return reply(200,{ok:true});
+    }
     if(url.pathname==='/api/contacts' && req.method==='POST'){
       limit('contact-add:'+id,20);
       const input=await body(req);
       if(typeof input.email!=='string'||input.email.length>254)return reply(400,{error:'Enter a valid email address.'});
       const contact=await store.contactByEmail(input.email.trim().toLowerCase());
       if(!contact||contact.id===id)return reply(404,{error:'Contact not found. Check their account email.'});
-      await store.saveContact(id,contact.id);
+      await store.saveContact(id,contact.id);await store.reopenChat(id,contact.id);
       const profile={...visibleProfile(contact,true),savedContact:true};
       io.to(id).emit('contact:updated',profile);
       return reply(200,{user:profile});

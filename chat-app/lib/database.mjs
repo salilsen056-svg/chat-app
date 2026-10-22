@@ -15,7 +15,7 @@ export async function db() {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(73912231)');
-      for (const file of ['001-initial.sql', '002-media.sql', '003-hidden-messages.sql', '004-status.sql', '005-receipts.sql', '006-contacts.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
+      for (const file of ['001-initial.sql', '002-media.sql', '003-hidden-messages.sql', '004-status.sql', '005-receipts.sql', '006-contacts.sql', '007-hidden-chats.sql']) await client.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
@@ -49,7 +49,7 @@ export const store = {
   async users(id) {
     const result = await (await db()).query(`SELECT u.id,u.name,u.email,u."photoVersion", EXISTS(SELECT 1 FROM contacts c WHERE c."ownerId"=$1 AND c."contactId"=u.id) AS "savedContact", row_to_json(latest) AS "lastMessage" FROM users u LEFT JOIN LATERAL
       (SELECT id,"from","to",text,deleted,"createdAt","deliveredAt","readAt","mediaType","mediaName","mediaMime","mediaSize" FROM messages WHERE NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h."userId"=$1 AND h."messageId"=messages.id) AND conversation=least(u.id,$1)||':'||greatest(u.id,$1) ORDER BY "createdAt" DESC,id DESC LIMIT 1) latest ON true
-      WHERE u.id<>$1 AND (EXISTS(SELECT 1 FROM contacts c WHERE c."ownerId"=$1 AND c."contactId"=u.id) OR latest.id IS NOT NULL) ORDER BY u.name LIMIT 200`, [id]);
+      WHERE u.id<>$1 AND (EXISTS(SELECT 1 FROM contacts c WHERE c."ownerId"=$1 AND c."contactId"=u.id) AND NOT EXISTS(SELECT 1 FROM hidden_chats h WHERE h."userId"=$1 AND h."peerId"=u.id) OR latest.id IS NOT NULL) ORDER BY u.name LIMIT 200`, [id]);
     return result.rows;
   },
   async history(id,peer) {
@@ -88,6 +88,15 @@ export const store = {
       await client.query('COMMIT');committed=true;
     }finally{if(!committed)await client.query('ROLLBACK').catch(()=>{});client.release();}
   },
+  async deleteChat(userId,peerId){
+    const c=await(await db()).connect();
+    try{await c.query('BEGIN');
+      await c.query('INSERT INTO hidden_messages ("userId","messageId") SELECT $1,id FROM messages WHERE conversation=$2 ON CONFLICT DO NOTHING',[userId,[userId,peerId].sort().join(':')]);
+      await c.query('INSERT INTO hidden_chats ("userId","peerId") VALUES($1,$2) ON CONFLICT DO NOTHING',[userId,peerId]);
+      await c.query('COMMIT');
+    }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  },
+  reopenChat: (userId,peerId)=>one('DELETE FROM hidden_chats WHERE "userId"=$1 AND "peerId"=$2 RETURNING "peerId"',[userId,peerId]),
   async clear(userId,peerId) {
     const result=await (await db()).query('INSERT INTO hidden_messages ("userId","messageId") SELECT $1,id FROM messages WHERE conversation=$2 ON CONFLICT ("userId","messageId") DO NOTHING RETURNING "messageId" AS id',[userId,[userId,peerId].sort().join(':')]);
     return result.rows.map(m=>m.id);
