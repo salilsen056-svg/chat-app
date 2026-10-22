@@ -1,3 +1,4 @@
+import {groups} from './lib/groups.mjs';
 import {visibleProfile} from './lib/profile-privacy.mjs';
 import { callConfiguration } from './lib/ice-config.mjs';
 import { statusStore } from './lib/status-store.mjs';
@@ -69,19 +70,41 @@ const server = createServer(async (req, res) => {
     const user = await authenticate(req.headers.cookie);
     if (!user) return reply(401, { error: 'Please sign in.' });
     const id = user.id;
+    if(url.pathname==='/api/groups'){
+      if(req.method==='GET')return reply(200,{groups:await groups.list(id)});
+      if(req.method==='POST'){limit('group-create:'+id,10);const input=await body(req);const members=[...new Set(Array.isArray(input.members)?input.members:[])];
+        if(typeof input.name!=='string'||!input.name.trim()||input.name.trim().length>80||!members.length||members.length>49||members.some(m=>!validId(m)||m===id))return reply(400,{error:'Choose a name and 1–49 saved contacts.'});
+        try{return reply(200,{group:await groups.create(id,input.name.trim(),members)});}catch(e){return reply(400,{error:e.message});}
+      }
+    }
+    if(url.pathname.startsWith('/api/groups/')){
+      const parts=url.pathname.split('/'),groupId=parts[3];if(!validId(groupId)||!await groups.member(groupId,id))return reply(404,{error:'Group not found.'});
+      if(parts.length===5&&parts[4]==='messages'){
+        if(req.method==='GET')return reply(200,{messages:await groups.history(groupId,id)});
+        if(req.method==='POST'){limit('group-message:'+id,60);let text;try{text=cleanMessage((await body(req)).text);}catch(e){return reply(400,{error:e.message});}
+          const message=await groups.send(groupId,id,text);if(!message)return reply(403,{error:'You are no longer a member.'});return reply(200,{message});}
+      }
+      if(parts.length===4&&req.method==='DELETE'){await groups.leave(groupId,id);return reply(200,{ok:true});}
+    }
+    if(url.pathname.startsWith('/api/blocks/')&&['POST','DELETE'].includes(req.method)){
+      const other=url.pathname.slice('/api/blocks/'.length);if(!validId(other)||other===id||!await store.user(other))return reply(400,{error:'Invalid user.'});
+      if(req.method==='POST')await store.setBlock(id,other);else await store.removeBlock(id,other);
+      io.to(id).to(other).emit('contacts:refresh');return reply(200,{ok:true});
+    }
     if(url.pathname==='/api/calls/config' && req.method==='GET') {
       try{return reply(200,await callConfiguration());}catch{return reply(503,{error:'Call relay is unavailable. Check the TURN server configuration.'});}
     }
     if(url.pathname==='/api/statuses'){
-      if(req.method==='GET')return reply(200,{statuses:await statusStore.list()});
+      if(req.method==='GET')return reply(200,{statuses:await statusStore.list(id)});
       if(req.method==='POST'){
         limit('status:'+id,10);const chunks=[];let size=0;
-        for await(const chunk of req){size+=chunk.length;if(size>BODY_LIMIT)return reply(413,{error:'Upload exceeds 10 MB.'});chunks.push(chunk);}
+        for await(const chunk of req){size+=chunk.length;if(size>BODY_LIMIT)return reply(413,{error:'Upload exceeds 30 MB.'});chunks.push(chunk);}
         let text,media;
         try{
           const data=await new Response(Buffer.concat(chunks),{headers:{'Content-Type':req.headers['content-type']||''}}).formData();
           text=data.get('text')||'';if(typeof text!=='string'||text.length>2000)throw Error('Status must be at most 2000 characters.');
           text=text.trim();const file=data.get('file');if(file?.size)media=await prepareMedia(Buffer.from(await file.arrayBuffer()),file.type,file.name);
+          if(media?.type==='audio')throw Error('Statuses support photos and videos.');
           if(!text&&!media)throw Error('Add text, a photo or a video.');
         }catch(e){return reply(400,{error:e.message});}
         if(!await authenticate(req.headers.cookie))return reply(401,{error:'Please sign in again.'});
@@ -92,7 +115,7 @@ const server = createServer(async (req, res) => {
       const parts=url.pathname.split('/'),statusId=parts[3];if(!validId(statusId))return reply(404,{error:'Status not found.'});
       if(parts.length===4 && req.method==='DELETE'){if(!await statusStore.remove(statusId,id))return reply(404,{error:'Status not found.'});io.emit('status:updated');return reply(200,{ok:true});}
       if(parts[4]==='media' && parts.length===5 && ['GET','HEAD'].includes(req.method)){
-        const media=await statusStore.media(statusId);if(!media)return reply(404,{error:'Status expired or removed.'});
+        const media=await statusStore.media(statusId,id);if(!media)return reply(404,{error:'Status expired or removed.'});
         const range=byteRange(req.headers.range,media.data.length);if(!range){res.writeHead(416,{'Content-Range':'bytes */'+media.data.length});return res.end();}
         const headers={'Content-Type':media.mediaMime,'Content-Length':range.end-range.start+1,'Accept-Ranges':'bytes','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'};
         if(range.partial)headers['Content-Range']='bytes '+range.start+'-'+range.end+'/'+media.data.length;
@@ -115,10 +138,11 @@ const server = createServer(async (req, res) => {
       limit(`upload:${id}`,10);
       const to=url.searchParams.get('to');
       if (!validId(to) || to===id || !await store.user(to)) return reply(400,{error:'Choose a valid recipient.'});
+      if(await store.isBlocked(id,to))return reply(403,{error:'You cannot send messages to this person.'});
       if (!req.headers['content-type']?.startsWith('multipart/form-data;')) return reply(400,{error:'Choose a photo or video to upload.'});
-      if (Number(req.headers['content-length'])>BODY_LIMIT) return reply(413,{error:'Upload exceeds the 10 MB limit.'});
+      if (Number(req.headers['content-length'])>BODY_LIMIT) return reply(413,{error:'Upload exceeds the 30 MB limit.'});
       const chunks=[];let bytes=0;
-      for await (const chunk of req) { bytes+=chunk.length;if(bytes>BODY_LIMIT)return reply(413,{error:'Upload exceeds the 10 MB limit.'});chunks.push(chunk); }
+      for await (const chunk of req) { bytes+=chunk.length;if(bytes>BODY_LIMIT)return reply(413,{error:'Upload exceeds the 30 MB limit.'});chunks.push(chunk); }
       let media,caption;
       try {
         const data=await new Response(Buffer.concat(chunks),{headers:{'Content-Type':req.headers['content-type']}}).formData();
@@ -128,6 +152,7 @@ const server = createServer(async (req, res) => {
         media=await prepareMedia(Buffer.from(await file.arrayBuffer()),file.type,file.name);
       } catch(e) {return reply(400,{error:e.message.startsWith('Choose') || /limit|smaller|must be|invalid|match/.test(e.message) ? e.message : 'Unable to read this file. Choose a JPG, PNG, WebP, MP4 or WebM.'});}
       if (!await authenticate(req.headers.cookie)) return reply(401,{error:'Session expired. Please sign in again.'});
+      if(await store.isBlocked(id,to))return reply(403,{error:'You cannot send messages to this person.'});
       let message;
       try {message=await store.sendMedia(id,to,caption.trim(),media);} catch(e) {if(e.message.startsWith('Media storage'))return reply(507,{error:e.message});throw e;}
       io.to(id).to(to).emit('message:new',message);
@@ -170,7 +195,8 @@ const server = createServer(async (req, res) => {
         await store.setPhoto(id, photo, randomBytes(12).toString('hex'));
       }
       const updated = publicUser(await store.user(id));
-      io.to([id,...await store.profileViewers(id)]).emit('profile:updated', { id: updated.id, avatarUrl: updated.avatarUrl });
+      const viewers=await store.profileViewers(id);const allowedViewers=[];for(const viewer of viewers)if(!await store.isBlocked(id,viewer))allowedViewers.push(viewer);
+      io.to([id,...allowedViewers]).emit('profile:updated', { id: updated.id, avatarUrl: updated.avatarUrl });
       return reply(200, { user: updated });
     }
     if(url.pathname.startsWith('/api/chats/') && req.method==='DELETE'){
@@ -187,7 +213,7 @@ const server = createServer(async (req, res) => {
       const contact=await store.contactByEmail(input.email.trim().toLowerCase());
       if(!contact||contact.id===id)return reply(404,{error:'Contact not found. Check their account email.'});
       await store.saveContact(id,contact.id);await store.reopenChat(id,contact.id);
-      const profile={...visibleProfile(contact,true),savedContact:true};
+      const profile={...visibleProfile(contact,await store.canViewProfile(id,contact.id)),savedContact:true};
       io.to(id).emit('contact:updated',profile);
       return reply(200,{user:profile});
     }
@@ -197,7 +223,7 @@ const server = createServer(async (req, res) => {
       const contact=await store.user(contactId);if(!contact)return reply(404,{error:'User not found.'});
       const saved=req.method==='POST';
       if(saved)await store.saveContact(id,contactId);else await store.removeContact(id,contactId);
-      const profile={...visibleProfile(contact,saved),savedContact:saved};
+      const profile={...visibleProfile(contact,saved&&await store.canViewProfile(id,contactId)),savedContact:saved};
       io.to(id).emit('contact:updated',profile);
       return reply(200,{user:profile});
     }
@@ -209,7 +235,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/users' && req.method === 'GET') {
       const users = await store.users(id);
-      return reply(200, { users: users.map(u => ({ ...visibleProfile(u,u.savedContact), savedContact:u.savedContact, lastMessage: u.lastMessage ? publicMessage(u.lastMessage) : null })) });
+      return reply(200, { users: users.map(u => ({ ...visibleProfile(u,u.savedContact&&!u.unavailable), savedContact:u.savedContact, blocked:u.blocked, lastMessage: u.lastMessage ? publicMessage(u.lastMessage) : null })) });
     }
     if (url.pathname === '/api/messages' && req.method === 'GET') {
       const peer = url.searchParams.get('with'); if (!validId(peer || '')) return reply(400, { error: 'Invalid user.' });
@@ -220,7 +246,7 @@ const server = createServer(async (req, res) => {
 });
 const io = new Server(server, { maxHttpBufferSize: 65536, allowRequest: (req, done) => { try { done(null, !req.headers.origin || new URL(req.headers.origin).host === req.headers.host); } catch { done(null, false); } } });
 io.use(async (socket, done) => { try { const user = await authenticate(socket.request.headers.cookie); if (!user) return done(new Error('Please sign in.')); socket.data.user = publicUser(user); done(); } catch { done(new Error('Database unavailable.')); } });
-installCalls(io,authenticate,limit,async(subject,viewer)=>visibleProfile(await store.user(subject.id),await store.canViewProfile(viewer,subject.id)));
+installCalls(io,authenticate,limit,async(subject,viewer)=>visibleProfile(await store.user(subject.id),await store.canViewProfile(viewer,subject.id)),(a,b)=>store.isBlocked(a,b));
 io.on('connection', socket => {
   const user = socket.data.user; socket.join(user.id);
   store.delivered(user.id).then(rows=>{for(const m of rows)io.to(m.from).to(user.id).emit('message:receipt',m);}).catch(()=>{});
@@ -292,6 +318,7 @@ io.on('connection', socket => {
       const text = cleanMessage(input?.text), to = input?.to;
       if (!validId(to || '') || to === user.id) throw new Error('Choose a valid recipient.');
       if (!await store.user(to)) throw new Error('User not found.');
+      if(await store.isBlocked(user.id,to))throw Error('You cannot send messages to this person.');
       const message = await store.send(user.id, to, text);
       io.to(user.id).to(to).emit('message:new', message); ack({ ok: true });
     } catch(e) { ack({ error: e.message }); }
